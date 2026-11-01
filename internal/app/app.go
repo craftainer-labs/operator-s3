@@ -29,8 +29,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	samplev1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
-	"github.com/craftainer-labs/operator-s3/internal/controller"
+	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 	webhookv1alpha1 "github.com/craftainer-labs/operator-s3/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -47,7 +46,7 @@ var scheme = newScheme()
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
-	utilruntime.Must(samplev1alpha1.AddToScheme(s))
+	utilruntime.Must(s3v1alpha1.AddToScheme(s))
 	// +kubebuilder:scaffold:scheme
 	return s
 }
@@ -218,31 +217,39 @@ type setupStep struct {
 	fn   func(ctrl.Manager) error
 }
 
-// setup registers the controllers, the probes, and the webhooks when they are
-// enabled.
+// The manager's access to the group's kinds. The controllers that act on them
+// are added with their own markers (the Secrets, Events and Namespaces they
+// read and write).
+//
+// +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores;objectstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets;bucketaccesses,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores/status;objectstores/status;buckets/status;bucketaccesses/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets/finalizers;bucketaccesses/finalizers,verbs=update
+
+// setup registers the probes and, when they are enabled, the webhooks. There
+// are no controllers yet.
 func setup(mgr ctrl.Manager, webhooks bool) error {
 	steps := []setupStep{
-		{"greeting controller", setupGreetingController},
 		{"probes", func(mgr ctrl.Manager) error { return addChecks(mgr) }},
 	}
 	if webhooks {
-		steps = append(steps, setupStep{"greeting webhook", webhookv1alpha1.SetupGreetingWebhookWithManager})
+		steps = append(steps,
+			setupStep{"cluster object store webhook", webhookv1alpha1.SetupClusterObjectStoreWebhookWithManager},
+			setupStep{"object store webhook", webhookv1alpha1.SetupObjectStoreWebhookWithManager},
+			setupStep{"bucket webhook", webhookv1alpha1.SetupBucketWebhookWithManager},
+		)
 	}
 	// +kubebuilder:scaffold:builder
+	return runSteps(mgr, steps)
+}
+
+func runSteps(mgr ctrl.Manager, steps []setupStep) error {
 	for _, step := range steps {
 		if err := step.fn(mgr); err != nil {
 			return fmt.Errorf("set up the %s: %w", step.name, err)
 		}
 	}
 	return nil
-}
-
-func setupGreetingController(mgr ctrl.Manager) error {
-	return (&controller.GreetingReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder(EventRecorderName),
-	}).SetupWithManager(mgr)
 }
 
 // serveProbes answers /healthz and /readyz without a cluster, until ctx is

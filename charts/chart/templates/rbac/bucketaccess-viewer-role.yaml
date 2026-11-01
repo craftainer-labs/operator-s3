@@ -14,20 +14,20 @@ metadata:
     app.kubernetes.io/name: {{ include "operator-s3.name" . }}
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-  name: {{ include "operator-s3.resourceName" (dict "suffix" "greeting-viewer-role" "context" $) }}
+  name: {{ include "operator-s3.resourceName" (dict "suffix" "bucketaccess-viewer-role" "context" $) }}
 rules:
 - apiGroups:
-  - sample.craftainer.dev
+  - s3.craftainer.dev
   resources:
-  - greetings
+  - bucketaccesses
   verbs:
   - get
   - list
   - watch
 - apiGroups:
-  - sample.craftainer.dev
+  - s3.craftainer.dev
   resources:
-  - greetings/status
+  - bucketaccesses/status
   verbs:
   - get
 {{- end }}

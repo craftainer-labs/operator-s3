@@ -1,0 +1,302 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: buckets.s3.craftainer.dev
+spec:
+  group: s3.craftainer.dev
+  names:
+    categories:
+    - craftainer
+    kind: Bucket
+    listKind: BucketList
+    plural: buckets
+    singular: bucket
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .spec.serverRef.name
+      name: Server
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Bucket is a bucket on an object store.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of Bucket
+            properties:
+              deletionPolicy:
+                description: |-
+                  DeletionPolicy overrides the operator's DEFAULT_DATA_DELETION_POLICY for
+                  this object. It has no schema default: the default is pinned into
+                  status.effectiveDeletionPolicy at the first reconcile.
+                enum:
+                - Delete
+                - Retain
+                type: string
+              lifecycleRules:
+                description: lifecycleRules expire objects; the ids are unique.
+                items:
+                  description: LifecycleRule expires the objects under a prefix.
+                  properties:
+                    expirationDays:
+                      description: expirationDays deletes an object this many days
+                        after it was created.
+                      format: int32
+                      minimum: 1
+                      type: integer
+                    id:
+                      description: id names the rule; it is unique within the bucket.
+                      maxLength: 255
+                      minLength: 1
+                      type: string
+                    prefix:
+                      description: |-
+                        prefix limits the rule to the keys under it, without a leading slash.
+                        Empty means every key.
+                      maxLength: 1024
+                      type: string
+                      x-kubernetes-validations:
+                      - message: prefix must not start with /
+                        rule: '!self.startsWith(''/'')'
+                  required:
+                  - expirationDays
+                  - id
+                  type: object
+                maxItems: 10
+                type: array
+                x-kubernetes-list-map-keys:
+                - id
+                x-kubernetes-list-type: map
+              managementPolicies:
+                default:
+                - '*'
+                description: |-
+                  ManagementPolicies limits what the controller may do to the external
+                  object (ADR 0002, section 5). The default is ["*"].
+                items:
+                  description: |-
+                    ManagementPolicy is one value of spec.managementPolicies, with Crossplane's
+                    meanings (ADR 0002, section 5).
+                  enum:
+                  - '*'
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                  - LateInitialize
+                  type: string
+                maxItems: 5
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: '''*'' must stand alone'
+                  rule: '!(''*'' in self) || self.size() == 1'
+                - message: an explicit list must contain Observe
+                  rule: self == ['*'] || 'Observe' in self
+              objectLock:
+                default: false
+                description: |-
+                  objectLock turns on S3 object lock. It can only be set when the bucket
+                  is created.
+                type: boolean
+                x-kubernetes-validations:
+                - message: objectLock is immutable
+                  rule: self == oldSelf
+              quota:
+                description: quota limits the bucket's size.
+                properties:
+                  hardBytes:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      hardBytes is the largest size the bucket may reach, for example 50Gi.
+                      The admission webhook requires at least 1 byte.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - hardBytes
+                type: object
+              serverRef:
+                description: ServerRef selects the server. It is immutable.
+                properties:
+                  kind:
+                    description: Kind is the server kind.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the server's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: serverRef is immutable
+                  rule: self == oldSelf
+              versioning:
+                default: false
+                description: versioning keeps every version of an object.
+                type: boolean
+            required:
+            - serverRef
+            type: object
+            x-kubernetes-validations:
+            - message: serverRef.kind must be ClusterObjectStore or ObjectStore
+              rule: self.serverRef.kind in ['ClusterObjectStore', 'ObjectStore']
+          status:
+            description: status defines the observed state of Bucket
+            properties:
+              conditions:
+                description: Conditions holds Ready, Synced and ServerReachable.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              deletionPolicySource:
+                description: DeletionPolicySource says where the pinned value came
+                  from.
+                enum:
+                - OperatorDefault
+                - Fallback
+                type: string
+              effectiveDeletionPolicy:
+                description: |-
+                  EffectiveDeletionPolicy is the default pinned at the first reconcile.
+                  Deletion honours spec.deletionPolicy when set, otherwise this field.
+                enum:
+                - Delete
+                - Retain
+                type: string
+              externalId:
+                description: ExternalID is the backend-assigned id, where there is
+                  one.
+                maxLength: 255
+                type: string
+              externalName:
+                description: ExternalName is the name derived by naming.Tenant.
+                maxLength: 255
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is when the controller last reconciled
+                  the claim.
+                format: date-time
+                type: string
+              lateInitialized:
+                additionalProperties:
+                  type: string
+                description: LateInitialized holds the values recorded under LateInitialize.
+                maxProperties: 20
+                type: object
+                x-kubernetes-validations:
+                - message: values are at most 255 characters
+                  rule: self.all(k, size(self[k]) <= 255)
+              observedGeneration:
+                description: ObservedGeneration is the metadata.generation last reconciled.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: 'metadata.name must not contain dots: it is mapped to a bucket
+            name'
+          rule: self.metadata.name.matches('^[a-z0-9]([a-z0-9-]*[a-z0-9])?$')
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

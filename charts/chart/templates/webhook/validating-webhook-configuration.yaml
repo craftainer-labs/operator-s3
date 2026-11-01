@@ -14,18 +14,58 @@ webhooks:
     service:
       name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
       namespace: {{ .Release.Namespace }}
-      path: /validate-sample-craftainer-dev-v1alpha1-greeting
+      path: /validate-s3-craftainer-dev-v1alpha1-bucket
   failurePolicy: Fail
-  name: vgreeting-v1alpha1.kb.io
+  name: vbucket-v1alpha1.kb.io
   rules:
   - apiGroups:
-    - sample.craftainer.dev
+    - s3.craftainer.dev
     apiVersions:
     - v1alpha1
     operations:
     - CREATE
     - UPDATE
     resources:
-    - greetings
+    - buckets
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-s3-craftainer-dev-v1alpha1-clusterobjectstore
+  failurePolicy: Fail
+  name: vclusterobjectstore-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - s3.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - clusterobjectstores
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
+      path: /validate-s3-craftainer-dev-v1alpha1-objectstore
+  failurePolicy: Fail
+  name: vobjectstore-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - s3.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - objectstores
   sideEffects: None
 {{- end }}

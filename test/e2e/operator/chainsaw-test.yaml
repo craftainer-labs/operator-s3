@@ -1,6 +1,7 @@
 # Installs the Helm chart into a Pod Security `restricted` namespace, with the
-# manager running as an arbitrary UID, then exercises the sample API end to
-# end. The steps run in order; the cluster is thrown away afterwards.
+# manager running as an arbitrary UID, then exercises the s3.craftainer.dev API
+# end to end: the CRDs, their defaults and the webhooks (the controllers come
+# later). The steps run in order; the cluster is thrown away afterwards.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -57,112 +58,72 @@ spec:
                 name: operator-s3.craftainer.dev
               (spec.holderIdentity != null): true
 
-    - name: a Greeting becomes Ready
+    - name: the CRDs are established
       try:
-        - apply:
-            file: greeting.yaml
-        - assert:
-            file: greeting-ready.yaml
-        - assert:
-            resource:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: hello
-              data:
-                message: Hello from Chainsaw
-        - apply:
-            resource:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
-              metadata:
-                name: hello
-              spec:
-                message: Bonjour de Chainsaw
-        - assert:
-            resource:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: hello
-              data:
-                message: Bonjour de Chainsaw
-        - assert:
-            resource:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
-              metadata:
-                name: hello
-              status:
-                observedGeneration: 2
-                (conditions[?type == 'Ready'] | [0].status): "True"
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              for crd in clusterobjectstores objectstores buckets bucketaccesses; do
+                kubectl wait --for=condition=Established --timeout=60s "crd/${crd}.s3.craftainer.dev"
+              done
 
-    - name: the webhook rejects a blank message
+    - name: an ObjectStore gets its schema defaults
       try:
         - apply:
             resource:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ObjectStore
               metadata:
-                name: blank
+                name: store
               spec:
-                message: "   "
+                endpoint: https://rustfs.example.svc:9000
+                adminCredentialsSecretRef:
+                  name: store-admin
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ObjectStore
+              metadata:
+                name: store
+              spec:
+                region: us-east-1
+                pathStyle: true
+                backend: RustFS
+
+    - name: the webhook rejects a bad proxy URL
+      try:
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ObjectStore
+              metadata:
+                name: bad-proxy
+              spec:
+                endpoint: https://rustfs.example.svc:9000
+                proxyURL: ftp://proxy
+                adminCredentialsSecretRef:
+                  name: store-admin
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'non-blank')): true
+                  (contains($error, 'socks5')): true
 
-    - name: deleting a Greeting deletes its ConfigMap
-      try:
-        - delete:
-            ref:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
-              name: hello
-        - error:
-            resource:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: hello
-
-    - name: deletionPolicy Retain keeps the ConfigMap
+    - name: the webhook rejects a zero quota
       try:
         - apply:
             resource:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
               metadata:
-                name: keeper
+                name: no-room
               spec:
-                message: kept
-                deletionPolicy: Retain
-        - assert:
-            resource:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
-              metadata:
-                name: keeper
-              status:
-                (conditions[?type == 'Ready'] | [0].status): "True"
-        - delete:
-            ref:
-              apiVersion: sample.craftainer.dev/v1alpha1
-              kind: Greeting
-              name: keeper
-        - assert:
-            resource:
-              apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: keeper
-              data:
-                message: kept
-        - script:
-            content: |
-              set -eu
-              owners=$(kubectl get configmap keeper -n "$NAMESPACE" -o jsonpath='{.metadata.ownerReferences}')
-              test -z "$owners"
+                serverRef: {kind: ObjectStore, name: store}
+                quota: {hardBytes: "0"}
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'at least 1 byte')): true
 
     - name: metrics need a token
       try:
@@ -183,7 +144,7 @@ spec:
                   echo anonymous=\$anon
                   test \"\$anon\" = 401 -o \"\$anon\" = 403
                   curl -ks -H 'Authorization: Bearer ${token}' https://${svc}/metrics > /tmp/m
-                  grep -q '^greeting_reconcile_total' /tmp/m
+                  grep -q -E '^(go|process)_' /tmp/m
                   echo authenticated metrics ok"
       cleanup:
         - script:

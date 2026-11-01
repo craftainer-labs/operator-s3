@@ -1,0 +1,11 @@
+apiVersion: s3.craftainer.dev/v1alpha1
+kind: ObjectStore
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-s3
+    app.kubernetes.io/managed-by: kustomize
+  name: team-store
+  namespace: team-a
+spec:
+  endpoint: https://rustfs.team-a.svc:9000
+  adminCredentialsSecretRef: {name: team-store-admin}

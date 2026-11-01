@@ -1,0 +1,12 @@
+apiVersion: s3.craftainer.dev/v1alpha1
+kind: Bucket
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-s3
+    app.kubernetes.io/managed-by: kustomize
+  name: uploads
+  namespace: team-a
+spec:
+  serverRef: {kind: ClusterObjectStore, name: rustfs}
+  versioning: true
+  quota: {hardBytes: 50Gi}

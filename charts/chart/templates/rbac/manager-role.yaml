@@ -11,28 +11,10 @@ metadata:
   name: {{ include "operator-s3.resourceName" (dict "suffix" "manager-role" "context" $) }}
 rules:
 - apiGroups:
-  - ""
+  - s3.craftainer.dev
   resources:
-  - configmaps
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - events.k8s.io
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - sample.craftainer.dev
-  resources:
-  - greetings
+  - bucketaccesses
+  - buckets
   verbs:
   - get
   - list
@@ -40,16 +22,29 @@ rules:
   - update
   - watch
 - apiGroups:
-  - sample.craftainer.dev
+  - s3.craftainer.dev
   resources:
-  - greetings/finalizers
+  - bucketaccesses/finalizers
+  - buckets/finalizers
   verbs:
   - update
 - apiGroups:
-  - sample.craftainer.dev
+  - s3.craftainer.dev
   resources:
-  - greetings/status
+  - bucketaccesses/status
+  - buckets/status
+  - clusterobjectstores/status
+  - objectstores/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - s3.craftainer.dev
+  resources:
+  - clusterobjectstores
+  - objectstores
+  verbs:
+  - get
+  - list
+  - watch
