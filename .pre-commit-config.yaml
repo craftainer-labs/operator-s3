@@ -1,0 +1,281 @@
+# Run with prek (https://prek.j178.dev/, a Rust, drop-in-compatible
+# reimplementation of pre-commit — see CLAUDE.md for why) or with the
+# classic `pre-commit` CLI; both read this exact file.
+#
+# Fast, basic checks run on every commit. Every hook also carries the
+# "manual" stage, so `prek run --hook-stage manual --all-files` runs
+# everything at once regardless of which git hook would normally trigger
+# it. An instance layers its own language-specific hooks (ruff/mypy/
+# pytest, cargo fmt/clippy, golangci-lint, eslint/tsc, tflint, ...) onto
+# this file's `repos:` list — see docs/TEMPLATE.md's "Checks" section.
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+  - commit-msg
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-commit, manual]
+      - id: end-of-file-fixer
+        stages: [pre-commit, manual]
+      # Helm templates are Go templates, not YAML, and kustomize resource
+      # files hold several documents.
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+        exclude: ^charts/chart/templates/
+        stages: [pre-commit, manual]
+      - id: check-toml
+        stages: [pre-commit, manual]
+      - id: check-json
+        stages: [pre-commit, manual]
+      - id: check-added-large-files
+        stages: [pre-commit, manual]
+      - id: check-merge-conflict
+        stages: [pre-commit, manual]
+      - id: mixed-line-ending
+        stages: [pre-commit, manual]
+      - id: debug-statements
+        stages: [pre-commit, manual]
+      - id: detect-private-key
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      # No "manual" stage here, unlike every other hook in this file: this
+      # one needs the actual commit-message file git passes at the
+      # commit-msg stage, which "prek run --all-files --hook-stage manual"
+      # has no equivalent for.
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+
+  - repo: local
+    hooks:
+      - id: template-sync-manifest
+        name: template-sync-manifest (every tracked path classified)
+        entry: python3 .github/scripts/template_sync_manifest.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: scripts-tests
+        name: scripts-tests (.github/scripts unit tests, executable bits)
+        entry: env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p "test_*.py"
+        language: system
+        files: ^(\.github/(scripts|workflows)/|\.claude/hooks/|Makefile$)
+        pass_filenames: false
+        stages: [pre-commit, manual]
+
+      - id: devcontainer-lock
+        name: devcontainer-lock (lockfile matches devcontainer.json features)
+        entry: python3 .github/scripts/check_devcontainer_lock.py
+        language: system
+        files: ^\.devcontainer/devcontainer(-lock)?\.json$
+        pass_filenames: false
+        stages: [pre-commit, manual]
+
+  # Supply-chain/secret scanners (OWASP A01/A03/A04/A08 -- see
+  # docs/TEMPLATE.md's "Checks"). Revs are tags, not SHAs: Renovate's
+  # pre-commit manager bumps tags directly, and a SHA + "# frozen: vX"
+  # comment is pre-commit.ci's convention that it doesn't maintain.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.31.1
+    hooks:
+      # Offline when run locally (no token); checks.yml passes GH_TOKEN
+      # through to the devcontainer so CI also runs the online audits.
+      - id: zizmor
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      # Staged changes only, on every commit. Config: .gitleaks.toml.
+      - id: gitleaks
+        stages: [pre-commit]
+      # Full-history scan, only on demand / in CI. Same repo and rev, so
+      # it can't drift from the hook above; the entry override drops the
+      # --pre-commit/--staged flags the upstream hook passes.
+      - id: gitleaks
+        alias: gitleaks-history
+        name: gitleaks (full git history)
+        entry: gitleaks git --redact --verbose
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+
+  - repo: https://github.com/google/osv-scanner
+    rev: v2.7.0
+    hooks:
+      # Online (queries osv.dev). Only runs when a supported lockfile is
+      # in the file set: with none, osv-scanner exits 128 ("no packages
+      # found"), which would fail lockfile-less repos like this one.
+      - id: osv-scanner
+        stages: [manual]
+        always_run: false
+        files: (^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lock|uv\.lock|poetry\.lock|pdm\.lock|Pipfile\.lock|pylock\.toml|Cargo\.lock|requirements[^/]*\.txt)$
+
+  # template-docker's image-layer hooks (docs/TEMPLATE.md's "Image layer").
+  - repo: local
+    hooks:
+      # Official hadolint image, pinned (a regex manager in renovate.json
+      # tracks the tag); docker_image runs it with the repo mounted, so no
+      # host install is needed. Fails on warning and above, not info: the
+      # base-owned devcontainer Dockerfile trips info-level DL3066. There is no repo-wide
+      # DL3008 (pin apt package versions) ignore: where a pin would break rebuilds, add a
+      # per-line `# hadolint ignore=DL3008` with a reason.
+      - id: hadolint
+        name: hadolint (Dockerfile lint)
+        entry: hadolint/hadolint:v2.15.1 hadolint --failure-threshold warning
+        language: docker_image
+        files: ^(\.devcontainer/)?Dockerfile$
+        stages: [pre-commit, manual]
+
+      # The toolchain version ARGs must match between the devcontainer image
+      # and the runtime image. An instance appends its own ARG names (e.g.
+      # RUST_VERSION) to this entry.
+      - id: check-dockerfile-versions
+        name: check-dockerfile-versions (ARG defaults match across Dockerfiles)
+        entry: bash scripts/check-dockerfile-versions.sh DEBIAN_VERSION
+        language: system
+        # Also when the check itself, or this entry (the ARG list), changes.
+        files: ^((\.devcontainer/)?Dockerfile|scripts/check-dockerfile-versions\.sh|\.pre-commit-config\.yaml)$
+        pass_filenames: false
+        stages: [pre-commit, manual]
+
+      # Vulnerability scan of the built image tar for the current
+      # RELEASE_VERSION/RELEASE_ARCH in dist/ with Trivy (ADR 0001; the Trivy
+      # pin and why are in scripts/image-scan.sh). Manual stage only: it needs
+      # `make build` to have produced the tar and network for the
+      # vulnerability DB. Skips cleanly with no tar.
+      - id: image-scan
+        name: image-scan (Trivy, HIGH/CRITICAL with a fix)
+        entry: bash scripts/image-scan.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+
+      # Passive DAST of the built image: loads the tar from dist/, runs it as
+      # image-smoke does and runs the ZAP baseline scan against it (ADR 0002;
+      # the ZAP pin is in scripts/image-dast.sh, rule levels in the
+      # instance-owned .zap/rules.tsv). Manual stage only: it needs
+      # `make build` to have produced the tar, Docker and network to pull the
+      # ZAP image. Skips cleanly with no tar.
+      - id: image-dast
+        name: image-dast (ZAP baseline, passive)
+        entry: bash scripts/image-dast.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
+
+      # Offline tests of the scripts and Makefile logic above (repo
+      # derivation, version-check edge cases, smoke-test failure on a missing
+      # tar); needs no Docker.
+      - id: image-scripts-test
+        name: image-scripts-test (Makefile and scripts/ behaviour)
+        entry: bash scripts/test-image-scripts.sh
+        language: system
+        files: ^(Makefile|scripts/(check-dockerfile-versions|image-scan|image-dast|image-smoke|skopeo|test-image-scripts)\.sh)$
+        pass_filenames: false
+        stages: [pre-commit, manual]
+
+  # template-k8s-operator's Go and Kubernetes gates (docs/TEMPLATE.md,
+  # "Kubernetes operator template notes"). Tools come from
+  # scripts/develop.d/10-go.sh and 20-k8s-tools.sh (controller-gen and
+  # setup-envtest are installed into bin/ by operator.mk).
+  - repo: local
+    hooks:
+      - id: golangci-fmt
+        name: golangci-lint fmt --diff (gofmt, goimports)
+        entry: golangci-lint fmt --diff
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: golangci-lint
+        name: golangci-lint run
+        entry: golangci-lint run
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit, manual]
+
+      - id: go-mod-tidy
+        name: go.mod / go.sum are tidy
+        entry: go mod tidy -diff
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      # controller-gen output (CRDs, RBAC, webhook configuration, DeepCopy)
+      # is committed; this fails when it is stale.
+      - id: generated-current
+        name: generated files are current (make manifests generate)
+        entry: scripts/check-generated.sh
+        language: system
+        pass_filenames: false
+        files: ^(api/|internal/|config/|go\.mod|scripts/check-generated\.sh)
+        stages: [pre-push, manual]
+
+      # Unit tests and the envtest suites (a real kube-apiserver and etcd,
+      # fetched by setup-envtest) under the race detector, with the
+      # statement-coverage gate.
+      - id: go-test-coverage
+        name: go test -race (unit + envtest, 100% statement-coverage gate, COVERAGE_MIN)
+        entry: scripts/go-coverage.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: govulncheck
+        name: govulncheck (known vulnerabilities in reachable code of the manager)
+        # Online: reads vuln.go.dev. See scripts/govulncheck.sh for the mode.
+        entry: scripts/govulncheck.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      - id: check-go-version
+        name: Go version agrees (10-go.sh, Dockerfile, go.mod)
+        entry: scripts/check-go-version.sh
+        language: system
+        pass_filenames: false
+        files: ^(scripts/develop\.d/10-go\.sh|Dockerfile|go\.mod|scripts/check-go-version\.sh)$
+        stages: [pre-commit, manual]
+
+      # The Helm chart lints strictly and matches config/; the OLM bundle
+      # validates with operator-sdk and as a file-based catalog with opm.
+      - id: helm-lint
+        name: helm lint --strict, chart matches config/
+        entry: make --no-print-directory helm-lint
+        language: system
+        pass_filenames: false
+        files: ^(charts/|config/|scripts/check-chart-sync\.sh|operator\.mk)
+        stages: [pre-commit, manual]
+
+      - id: bundle-validate
+        name: OLM bundle (operator-sdk) and catalog (opm) validate
+        entry: make --no-print-directory bundle-validate
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push, manual]
+
+      # Offline tests of the release-extras scripts, the workflows' shape and
+      # the bundle/catalog/chart scripts; no Docker, no cluster.
+      - id: operator-scripts-test
+        name: operator scripts and workflows tests
+        entry: python3 -I scripts/test_operator_scripts.py
+        language: system
+        pass_filenames: false
+        files: ^(scripts/(extras/|bundle\.sh|catalog\.sh|check-[a-z-]+\.sh|e2e\.sh|test_operator_scripts\.py)|\.github/workflows/(release-extras|sign-attest|e2e)\.yml|operator\.mk|image\.mk)
+        stages: [pre-commit, manual]

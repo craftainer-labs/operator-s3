@@ -1,0 +1,26 @@
+# Chainsaw configuration for scripts/e2e.sh (docs: https://kyverno.github.io/chainsaw/).
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: e2e
+spec:
+  execution:
+    # One test at a time: the operator install is cluster-wide.
+    parallel: 1
+    failFast: true
+    forceTerminationGracePeriod: 5s
+  timeouts:
+    apply: 60s
+    assert: 120s
+    cleanup: 120s
+    delete: 60s
+    error: 60s
+    exec: 180s
+  error:
+    catch:
+      - events: {}
+      - podLogs:
+          selector: control-plane=controller-manager
+          container: manager
+  cleanup:
+    skipDelete: false

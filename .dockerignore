@@ -1,0 +1,35 @@
+# Build context excludes for the runtime image (top-level Dockerfile). The
+# devcontainer image has its own: .devcontainer/Dockerfile.dockerignore.
+**/node_modules
+coverage
+target
+.git
+.github
+.devcontainer
+.secrets
+.vscode
+.claude
+docs
+README.md
+CLAUDE.md
+dist
+
+### Go operator ###
+# Only the module and the Go sources go to the builder: the manifests, charts,
+# tests' fixtures and tool binaries (bin/) are not part of the image.
+bin
+charts
+config
+bundle
+catalog
+test
+# The devcontainer build shares this context and COPYs scripts/develop.sh and
+# scripts/develop.d/, so keep those.
+scripts/*
+!scripts/develop.sh
+!scripts/develop.d
+*.mk
+Makefile
+PROJECT
+**/*_test.go
+coverage.out

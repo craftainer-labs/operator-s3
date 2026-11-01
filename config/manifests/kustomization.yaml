@@ -1,0 +1,24 @@
+# The OLM bundle's input (`make bundle`): config/default minus cert-manager.
+# OLM (v0 and v1) issues and rotates the webhook serving certificate itself
+# from the CSV's webhookdefinitions and mounts it at the directory
+# controller-runtime serves from by default, so the cert-manager Issuer and
+# Certificate, and the --webhook-cert-path patch, are left out. The CSV base
+# in bases/ is read by `operator-sdk generate bundle` itself, not listed here.
+namespace: template-k8s-operator-system
+namePrefix: template-k8s-operator-
+
+resources:
+- ../crd
+- ../rbac
+- ../manager
+- ../webhook
+- ../samples
+- metrics_service.yaml
+
+patches:
+- path: manager_metrics_patch.yaml
+  target:
+    kind: Deployment
+- path: manager_webhook_patch.yaml
+  target:
+    kind: Deployment

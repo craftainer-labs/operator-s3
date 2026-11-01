@@ -1,0 +1,37 @@
+{{- if .Values.rbac.helpers.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+{{- if .Values.rbac.namespaced }}
+kind: Role
+{{- else }}
+kind: ClusterRole
+{{- end }}
+metadata:
+{{- if .Values.rbac.namespaced }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "template-k8s-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "greeting-editor-role" "context" $) }}
+rules:
+- apiGroups:
+  - sample.craftainer.dev
+  resources:
+  - greetings
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sample.craftainer.dev
+  resources:
+  - greetings/status
+  verbs:
+  - get
+{{- end }}

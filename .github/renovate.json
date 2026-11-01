@@ -1,0 +1,212 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "schedule": ["before 6am on monday"],
+  "pre-commit": {
+    "enabled": true
+  },
+  "vulnerabilityAlerts": {
+    "labels": ["security"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "patch",
+        "minor"
+      ],
+      "groupName": "patch and minor updates",
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "groupName": "major updates"
+    },
+    {
+      "description": "A Python minor (3.14 -> 3.15) is a runtime upgrade for every instance that runs Python as its app runtime: its own runtime Dockerfile must move in step, and its tools must support the new version. Keep it out of the automerged group, as its own PR for manual review.",
+      "matchDatasources": [
+        "python-version"
+      ],
+      "matchDepNames": [
+        "python"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "python minor upgrade",
+      "automerge": false
+    },
+    {
+      "description": "Pin container images to their digest. Scoped to the docker managers on purpose: a global pinDigests also hits the pre-commit manager, whose tag revs can't be converted to digests (the update fails). GitHub Actions are pinned by helpers:pinGitHubActionDigests instead.",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "pinDigests": true
+    },
+    {
+      "description": "Renovate can't regenerate .devcontainer/devcontainer-lock.json, so features are bumped by hand together with it (see .devcontainer/README.md).",
+      "matchManagers": [
+        "devcontainer"
+      ],
+      "matchDepTypes": [
+        "feature"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "The Go toolchain is pinned in scripts/develop.d/10-go.sh (GO_VERSION), the Dockerfile's ARG GO_VERSION and go.mod's toolchain directive, and the three must move together (scripts/check-go-version.sh): one group, out of the automerged one, for manual review. go.mod's `go` directive is not in this group and Renovate does not bump it.",
+      "matchDepNames": [
+        "go",
+        "golang"
+      ],
+      "groupName": "go toolchain",
+      "automerge": false
+    },
+    {
+      "description": "Never bump go.mod's `go` directive automatically.",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "kubebuilder, controller-runtime, controller-tools, the Kubernetes libraries and the kind node image move together with the Kubernetes minor envtest and the e2e run: review them by hand.",
+      "matchDepNames": [
+        "sigs.k8s.io/controller-runtime",
+        "sigs.k8s.io/controller-tools",
+        "k8s.io/api",
+        "k8s.io/apimachinery",
+        "k8s.io/client-go",
+        "kubernetes-sigs/kubebuilder",
+        "kubernetes-sigs/kind",
+        "kubernetes/kubernetes"
+      ],
+      "groupName": "kubernetes stack",
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Dockerfile$/",
+        "/^\\.devcontainer/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\nARG \\w+_VERSION=(?<currentValue>.*)\\s"
+      ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^scripts/develop\\.d/.*\\.sh$/",
+        "/^scripts/post-create\\.d/.*\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n[A-Z0-9_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/.*\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n\\s*(?:runs-on|runner): \\$\\{\\{ vars\\.[A-Z0-9_]+ \\|\\| '(?<currentValue>[^']+)' \\}\\}"
+      ]
+    },
+    {
+      "description": "Pinned tool versions in the image-release Makefile and image.mk.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Makefile$/",
+        "/^image\\.mk$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n[A-Z0-9_]+_VERSION\\s*:?=\\s*(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "description": "The skopeo image pinned by tag and digest in the Makefile; Renovate updates both.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^Makefile$/"
+      ],
+      "matchStrings": [
+        "SKOPEO_IMAGE := quay\\.io/skopeo/stable:(?<currentValue>v[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "quay.io/skopeo/stable"
+    },
+    {
+      "description": "The hadolint image pinned in the hadolint hook.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.pre-commit-config\\.yaml$/"
+      ],
+      "matchStrings": [
+        "entry: hadolint/hadolint:(?<currentValue>\\S+) hadolint"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "hadolint/hadolint"
+    },
+    {
+      "description": "The Trivy image pinned by tag and digest in scripts/image-scan.sh; Renovate updates both.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^scripts/image-scan\\.sh$/"
+      ],
+      "matchStrings": [
+        "trivy=aquasec/trivy:(?<currentValue>[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "aquasec/trivy"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^operator\\.mk$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n[A-Z0-9_]+_VERSION \\?= (?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^scripts/e2e\\.sh$/",
+        "/^scripts/catalog\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n[A-Z0-9_]+=\"(?<currentValue>[^\"@]+)\""
+      ]
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/sign-attest\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n\\s*cosign-release: (?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "description": "The ZAP image pinned by tag and digest in scripts/image-dast.sh; Renovate updates both.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^scripts/image-dast\\.sh$/"
+      ],
+      "matchStrings": [
+        "zap=ghcr\\.io/zaproxy/zaproxy:(?<currentValue>[0-9][^@\\s]*)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "ghcr.io/zaproxy/zaproxy"
+    }
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ]
+}

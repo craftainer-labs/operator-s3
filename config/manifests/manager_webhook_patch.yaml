@@ -1,0 +1,7 @@
+# The webhook port only: OLM adds the serving-cert volume and mount itself.
+- op: add
+  path: /spec/template/spec/containers/0/ports/-
+  value:
+    containerPort: 9443
+    name: webhook-server
+    protocol: TCP

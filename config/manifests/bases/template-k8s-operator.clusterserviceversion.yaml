@@ -1,0 +1,66 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    categories: Developer Tools
+    description: A Kubernetes operator built from craftainer/template-k8s-operator.
+    # Pod Security `restricted` and a suggested install namespace for OLM v0
+    # (OLM v1 installs into the ClusterExtension's namespace).
+    operatorframework.io/suggested-namespace: template-k8s-operator-system
+    # OpenShift infrastructure features (EB-5): "disconnected" is true when
+    # every image the operator runs is listed in spec.relatedImages (the
+    # bundle step pins and lists the manager image). Add "proxy-aware" once
+    # the operator honours HTTP(S)_PROXY/NO_PROXY, and "fips-compliant" for a
+    # build with GOFIPS140 (see the Dockerfile) run with GODEBUG=fips140=on.
+    operators.openshift.io/infrastructure-features: '["disconnected"]'
+    repository: https://github.com/craftainer/template-k8s-operator
+  name: template-k8s-operator.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: Greeting is the Schema for the greetings API.
+      displayName: Greeting
+      kind: Greeting
+      name: greetings.sample.craftainer.dev
+      version: v1alpha1
+  description: |-
+    A sample operator. Instances replace this text with what the operator does,
+    how to configure it and what it needs from the cluster.
+  displayName: Template K8s Operator
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  # AllNamespaces is the only mode OLM v1 (ClusterExtension) installs without
+  # legacy compatibility; OLM v0 supports it too.
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - operator
+  - craftainer
+  links:
+  - name: Source
+    url: https://github.com/craftainer/template-k8s-operator
+  maintainers:
+  - email: maintainers@example.com
+    name: Maintainers
+  maturity: alpha
+  minKubeVersion: 1.33.0
+  provider:
+    name: craftainer
+    url: https://github.com/craftainer
+  # The manager image is added by `make bundle` (scripts/bundle-fixup.sh) with
+  # the digest it was built for.
+  relatedImages: []
+  version: 0.0.0

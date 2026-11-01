@@ -1,0 +1,13 @@
+apiVersion: sample.craftainer.dev/v1alpha1
+kind: Greeting
+metadata:
+  name: hello
+spec:
+  message: Hello from Chainsaw
+  deletionPolicy: Delete
+status:
+  observedGeneration: 1
+  configMapName: hello
+  (conditions[?type == 'Ready'] | [0].status): "True"
+  (conditions[?type == 'Ready'] | [0].observedGeneration): 1
+  (conditions[?type == 'Synced'] | [0].status): "True"

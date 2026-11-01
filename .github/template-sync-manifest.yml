@@ -1,0 +1,230 @@
+# Classifies every path tracked in this repo into exactly one template-sync
+# tier, read by ../workflows/template-sync.yml from the template's tagged ref
+# being synced *to* (never from an instance's own copy) -- see
+# ../workflows/README.md's "Template sync" section for the tier semantics and
+# ../scripts/README.md for the checker that keeps this file exhaustive.
+#
+# A path matching a "replace" pattern that an instance has locally deleted or
+# renamed is recreated on the next sync -- that's inherent to "replace" (byte-
+# for-byte, unconditional), not a bug to work around here; an instance that
+# wants a template-owned path gone for good should move its pattern to
+# "ignore" in a template release rather than deleting the file locally.
+#
+# This started as template-base's own manifest and is itself "merge" tier:
+# template-docker is both an instance of template-base and its own template
+# (the shared image layer) for further instances (template-fastapi,
+# template-axum, template-react), so it edits this file directly, covering
+# its own (larger) tracked-file set, and resolves base's additions by hand --
+# see docs/TEMPLATE.md's "Image layer (template-docker)" section.
+#
+# An instance that isn't itself a template doesn't edit this file; it lists
+# its own files (e.g. src/) in ../template-sync-manifest.local.yml instead --
+# same format, "ignore" tier only, read by the completeness check but never
+# by sync.
+#
+# Patterns: a trailing "/" matches the directory and everything under it; "*"
+# matches any run of characters (including "/"); anything else is an exact
+# path. Every pattern here is anchored at the repo root.
+
+replace:
+  # Base-owned files an instance extends through a hook (see
+  # docs/TEMPLATE.md's "Instance extension points") rather than by editing
+  # them, so a sync can overwrite them safely.
+  - .claude/hooks/self-check.sh
+  # Listed one by one, not as a glob: instances add their own skills and
+  # agents under ignore (.claude/skills/<name>/, .claude/agents/<name>.md).
+  # When base deletes a skill or agent, keep its line here as a tombstone:
+  # sync reads only the new ref's manifest and removes a replace path only
+  # if some pattern still matches it in the old ref, so dropping the line
+  # together with the files would leave them in every instance.
+  - .claude/skills/owasp-scan/
+  - .claude/skills/plan-creation/
+  - .claude/skills/plan-execution/
+  - .claude/agents/plan-executor.md
+  - .devcontainer/compose.yml
+  - .devcontainer/devcontainer-lock.json
+  - .devcontainer/resolve-ssh-agent.sh
+  - .vscode/extensions.json
+  - .vscode/settings.json
+  # Listed one by one, not as a glob: .github/workflows/README.md is merge.
+  - .github/workflows/checks.yml
+  # The two -apply workflows were folded into their fix/build workflows
+  # (an `apply` job); the lines stay as tombstones so a sync removes them.
+  - .github/workflows/moderate-bug-fix-apply.yml
+  - .github/workflows/moderate-bug-fix.yml
+  - .github/workflows/moderate-bug-triage.yml
+  - .github/workflows/moderate-cleanup.yml
+  - .github/workflows/moderate-feature-build-apply.yml
+  - .github/workflows/moderate-feature-build.yml
+  - .github/workflows/moderate-feature-triage.yml
+  - .github/workflows/moderate-setup.yml
+  - .github/workflows/release.yml
+  - .github/workflows/template-sync.yml
+  - .github/scripts/
+  - .github/ISSUE_TEMPLATE/
+  - .github/PULL_REQUEST_TEMPLATE.md
+
+  # Build/dependency/hook plumbing, all instance-agnostic.
+  - .devcontainer/Dockerfile
+  - .devcontainer/Dockerfile.dockerignore
+  - .gitattributes
+  - scripts/develop.sh
+  - scripts/post-create.sh
+  - scripts/develop.d/README.md
+  - scripts/post-create.d/README.md
+  - .secrets/README.md
+  - .secrets/.gitkeep
+
+  # The AI-assisted workflow, and every directory README/template documenting
+  # this repo's own conventions rather than product knowledge.
+  - CLAUDE.md
+  - docs/README.md
+  - docs/adrs/README.md
+  - docs/adrs/template.md
+  - docs/frs/README.md
+  - docs/frs/template.md
+  - docs/nfrs/README.md
+  - docs/nfrs/template.md
+  - docs/plans/README.md
+  - docs/plans/template.md
+
+  # template-docker's own layer on top of base: the image-release Makefile
+  # (identical for every image-shipping app; instances customise it only
+  # through variables in image.mk), the smoke test, and the runner-setup
+  # driver. Hook scripts are listed one by one, not as globs: an instance's
+  # own scripts/runner-setup.d/*.sh are ignore tier (below).
+  # Same precedent as template-python-package: the Makefile implements the
+  # release contract identically for every instance, so it's template-owned.
+  - Makefile
+  - scripts/image-smoke.sh
+  - scripts/runner-setup.sh
+  - scripts/runner-setup.d/README.md
+  - scripts/check-dockerfile-versions.sh
+  - scripts/image-scan.sh
+  - scripts/image-dast.sh
+  - scripts/skopeo.sh
+  - scripts/test-image-scripts.sh
+
+  # template-k8s-operator's tooling (docs/TEMPLATE.md, "Kubernetes operator
+  # template notes"): instance-agnostic, so fixes reach every operator through
+  # a sync. Listed one by one, not as globs: an instance's own scripts and
+  # workflows are ignore tier.
+  - operator.mk
+  - scripts/develop.d/10-go.sh
+  - scripts/develop.d/20-k8s-tools.sh
+  - scripts/post-create.d/10-go-download.sh
+  - scripts/go-coverage.sh
+  - scripts/govulncheck.sh
+  - scripts/check-generated.sh
+  - scripts/check-go-version.sh
+  - scripts/check-chart-sync.sh
+  - scripts/bundle.sh
+  - scripts/catalog.sh
+  - scripts/e2e.sh
+  - scripts/extras/check-absent.sh
+  - scripts/extras/check-dispatch.sh
+  - scripts/extras/refs.sh
+  - scripts/extras/stage-chart.sh
+  - scripts/test_operator_scripts.py
+  - bundle.Dockerfile.dockerignore
+  - catalog.Dockerfile.dockerignore
+  - test/e2e/chainsaw-config.yaml
+  - .github/workflows/e2e.yml
+  # Stopgaps for the release contract's missing extension points. When
+  # template-docker's release gains signing/attestation (NX1) and a post-
+  # `finalize` publish hook (NX4), delete these files and keep the lines as
+  # tombstones so a sync removes them from every operator.
+  - .github/workflows/release-extras.yml
+  - .github/workflows/sign-attest.yml
+
+ignore:
+  # Each instance chooses its own license and copyright holder.
+  - LICENSE
+
+  # The instance's own image: its Dockerfile (toolchain, build, runtime
+  # stages) and the image.mk variables that tune the template's Makefile.
+  # The skeletons shipped here are examples to replace, never synced.
+  - Dockerfile
+  - image.mk
+
+  # The operator scaffold: an instance renames the module, owns its API
+  # types, controllers, webhooks, CRDs, chart, bundle base and e2e tests, so
+  # none of it can be synced. go.sum is derived from go.mod. List directories
+  # that hold no .go file in .github/template-sync-manifest.local.yml.
+  - go.mod
+  - go.sum
+  - "*.go"
+  - PROJECT
+  - hack/boilerplate.go.txt
+  - config/
+  - charts/
+  - test/e2e/operator/
+
+  # The instance's ZAP baseline rule levels (seeded with a commented header;
+  # an instance adds its own FAIL/IGNORE lines, with a reason each).
+  - .zap/rules.tsv
+
+  # Product/domain knowledge and working plans: instance-owned from the
+  # moment it's instantiated.
+  - docs/architecture.md
+  - docs/system-design.md
+  - docs/glossary.md
+  - docs/stakeholders.md
+  - docs/adrs/[0-9]*.md
+  - docs/frs/FR-*.md
+  - docs/nfrs/NFR-*.md
+  - docs/plans/[0-9]*.md
+
+  # Instance-owned bookkeeping, written only by the sync workflow itself.
+  - .github/template-sync-state.json
+
+  # Instance hook files (see docs/TEMPLATE.md's "Instance extension
+  # points"): an instance's own compose fragment and the scripts it drops
+  # into the two hook directories.
+  - .devcontainer/compose.instance.yml
+  # (develop.d/*.sh and post-create.d/*.sh are not globbed here: this template
+  # ships a script in each, classified `replace` above.)
+  - scripts/runner-setup.d/*.sh
+
+  # An instance's own extra "ignore" patterns for paths this manifest can't
+  # know about (see docs/TEMPLATE.md's "Template sync" section).
+  - .github/template-sync-manifest.local.yml
+
+merge:
+  # Project identity (name/description) is interpolated per instance.
+  - README.md
+
+  # Baseline excludes the instance extends with its own entries.
+  - .dockerignore
+
+  # Files with no include mechanism of their own (JSON configs, prek's
+  # .pre-commit-config.yaml), and docs an instance appends to: a three-way
+  # merge keeps the instance's additions.
+  - .claude/settings.json
+  - .claude/README.md
+  - .devcontainer/devcontainer.json
+  - .devcontainer/README.md
+  - .vscode/tasks.json
+  - .vscode/README.md
+  - .github/workflows/README.md
+  - .github/CONTENTS.md
+  - .github/renovate.json
+  - .pre-commit-config.yaml
+  # Base's gitleaks config: the useDefault extension is base's, the
+  # [[allowlists]] entries are each instance's own (no include mechanism
+  # to split them), so a three-way merge, like .pre-commit-config.yaml.
+  - .gitleaks.toml
+  - .mcp.json
+  - .gitignore
+  # The golangci-lint config: the linter set is the template's, an instance
+  # adds its own exclusions, so a three-way merge.
+  - .golangci.yml
+  - scripts/README.md
+  - docs/TEMPLATE.md
+
+  # The critical one: as "replace", the first sync would overwrite a
+  # downstream template's own manifest, which classifies *its* tree for
+  # *its* instances. Ordinary instances never edit this file (they use the
+  # local manifest), so a merge applies cleanly for them and keeps their
+  # completeness check current with new base files.
+  - .github/template-sync-manifest.yml

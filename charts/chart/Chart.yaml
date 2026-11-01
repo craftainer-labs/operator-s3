@@ -1,0 +1,17 @@
+apiVersion: v2
+name: template-k8s-operator
+description: A Kubernetes operator built from craftainer/template-k8s-operator
+type: application
+# The release workflow overrides both with the release version
+# (`helm package --version X --app-version X`); these are the development values.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.33.0-0"
+home: https://github.com/craftainer/template-k8s-operator
+sources:
+  - https://github.com/craftainer/template-k8s-operator
+keywords:
+  - kubernetes
+  - operator
+annotations:
+  kubebuilder.io/generated-by: kubebuilder

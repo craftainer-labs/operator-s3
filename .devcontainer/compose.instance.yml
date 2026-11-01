@@ -1,0 +1,5 @@
+# Instance-owned, never touched by template sync: an instance puts its
+# `include:` stack fragments and any extra `services.myapp` settings
+# (`env_file`, `environment`, `depends_on`) here, so `compose.yml` stays
+# template-owned.
+services: {}

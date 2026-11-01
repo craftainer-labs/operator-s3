@@ -1,0 +1,55 @@
+apiVersion: rbac.authorization.k8s.io/v1
+{{- if .Values.rbac.namespaced }}
+kind: Role
+{{- else }}
+kind: ClusterRole
+{{- end }}
+metadata:
+{{- if .Values.rbac.namespaced }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - sample.craftainer.dev
+  resources:
+  - greetings
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - sample.craftainer.dev
+  resources:
+  - greetings/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - sample.craftainer.dev
+  resources:
+  - greetings/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1,0 +1,42 @@
+# golangci-lint v2 (https://golangci-lint.run/docs/product/migration-guide/).
+# `standard` is errcheck, govet, ineffassign, staticcheck and unused; the
+# list below adds the correctness and security linters that rarely produce
+# noise. Formatters are separate in v2 and run through
+# `golangci-lint fmt` (see the golangci-fmt hook).
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - ginkgolinter
+    - gosec
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+  settings:
+    nolintlint:
+      # A suppression must name its linter and say why.
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    # controller-gen output and the wiring the scaffold generates.
+    generated: lax
+    rules:
+      # Ginkgo and Gomega are written with dot imports by design (their
+      # documentation and every kubebuilder suite do); only test files.
+      - linters: [revive]
+        path: _test\.go$
+        text: "dot-imports: should not use dot imports"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

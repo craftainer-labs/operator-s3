@@ -1,0 +1,10 @@
+apiVersion: sample.craftainer.dev/v1alpha1
+kind: Greeting
+metadata:
+  labels:
+    app.kubernetes.io/name: template-k8s-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: greeting-sample
+spec:
+  message: Hello from the sample API
+  deletionPolicy: Delete

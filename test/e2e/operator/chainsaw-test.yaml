@@ -1,0 +1,190 @@
+# Installs the Helm chart into a Pod Security `restricted` namespace, with the
+# manager running as an arbitrary UID, then exercises the sample API end to
+# end. The steps run in order; the cluster is thrown away afterwards.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: operator
+spec:
+  namespaceTemplate:
+    metadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+  steps:
+    - name: install the chart
+      try:
+        - script:
+            timeout: 5m
+            env:
+              - name: RELEASE
+                value: template-k8s-operator
+            content: |
+              set -eu
+              helm upgrade --install "$RELEASE" "$E2E_CHART_DIR" --namespace "$NAMESPACE" \
+                --set manager.image.registry= \
+                --set manager.image.repository="$E2E_IMAGE_REPOSITORY" \
+                --set manager.image.tag="$E2E_IMAGE_TAG" \
+                --set manager.image.pullPolicy=Never \
+                --set manager.podSecurityContext.runAsUser=12345 \
+                --wait --timeout 4m
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: template-k8s-operator-controller-manager
+              status:
+                availableReplicas: 1
+      cleanup:
+        - script:
+            content: helm uninstall template-k8s-operator --namespace "$NAMESPACE" --ignore-not-found
+
+    - name: runs as an arbitrary UID with leader election
+      try:
+        - script:
+            content: |
+              set -eu
+              uid=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.securityContext.runAsUser}')
+              test "$uid" = 12345
+              ro=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.containers[0].securityContext.readOnlyRootFilesystem}')
+              test "$ro" = true
+        - assert:
+            resource:
+              apiVersion: coordination.k8s.io/v1
+              kind: Lease
+              metadata:
+                name: template-k8s-operator.craftainer.dev
+              (spec.holderIdentity != null): true
+
+    - name: a Greeting becomes Ready
+      try:
+        - apply:
+            file: greeting.yaml
+        - assert:
+            file: greeting-ready.yaml
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: hello
+              data:
+                message: Hello from Chainsaw
+        - apply:
+            resource:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              metadata:
+                name: hello
+              spec:
+                message: Bonjour de Chainsaw
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: hello
+              data:
+                message: Bonjour de Chainsaw
+        - assert:
+            resource:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              metadata:
+                name: hello
+              status:
+                observedGeneration: 2
+                (conditions[?type == 'Ready'] | [0].status): "True"
+
+    - name: the webhook rejects a blank message
+      try:
+        - apply:
+            resource:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              metadata:
+                name: blank
+              spec:
+                message: "   "
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'non-blank')): true
+
+    - name: deleting a Greeting deletes its ConfigMap
+      try:
+        - delete:
+            ref:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              name: hello
+        - error:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: hello
+
+    - name: deletionPolicy Retain keeps the ConfigMap
+      try:
+        - apply:
+            resource:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              metadata:
+                name: keeper
+              spec:
+                message: kept
+                deletionPolicy: Retain
+        - assert:
+            resource:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              metadata:
+                name: keeper
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+        - delete:
+            ref:
+              apiVersion: sample.craftainer.dev/v1alpha1
+              kind: Greeting
+              name: keeper
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: keeper
+              data:
+                message: kept
+        - script:
+            content: |
+              set -eu
+              owners=$(kubectl get configmap keeper -n "$NAMESPACE" -o jsonpath='{.metadata.ownerReferences}')
+              test -z "$owners"
+
+    - name: metrics need a token
+      try:
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              svc="template-k8s-operator-controller-manager-metrics-service.${NAMESPACE}.svc:8443"
+              kubectl create serviceaccount metrics-client -n "$NAMESPACE"
+              kubectl create clusterrolebinding "e2e-metrics-${NAMESPACE}" \
+                --clusterrole=template-k8s-operator-metrics-reader --serviceaccount="${NAMESPACE}:metrics-client"
+              token=$(kubectl create token metrics-client -n "$NAMESPACE")
+              # curl runs in `default`: the test namespace enforces `restricted`.
+              kubectl run "metrics-curl" -n default --rm -i --restart=Never \
+                --image=curlimages/curl@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40 \
+                --command -- sh -c "
+                  anon=\$(curl -ks -o /dev/null -w '%{http_code}' https://${svc}/metrics)
+                  echo anonymous=\$anon
+                  test \"\$anon\" = 401 -o \"\$anon\" = 403
+                  curl -ks -H 'Authorization: Bearer ${token}' https://${svc}/metrics > /tmp/m
+                  grep -q '^greeting_reconcile_total' /tmp/m
+                  echo authenticated metrics ok"
+      cleanup:
+        - script:
+            content: kubectl delete clusterrolebinding "e2e-metrics-${NAMESPACE}" --ignore-not-found

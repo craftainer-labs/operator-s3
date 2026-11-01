@@ -1,0 +1,43 @@
+# The end-to-end run of docs/adrs/0002: scripts/e2e.sh builds the image,
+# creates a kind cluster on the pinned node image, installs cert-manager and
+# runs the Chainsaw tests (test/e2e), which install the Helm chart and
+# exercise the sample API. The same script runs locally; kind, kubectl, helm
+# and chainsaw are the pinned, checksum-verified binaries from
+# scripts/develop.d/20-k8s-tools.sh. The cluster is deleted at the end of the
+# script, and the runner is thrown away anyway.
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: kind + Chainsaw
+    # renovate: datasource=github-runners depName=ubuntu
+    runs-on: ${{ vars.CI_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kubectl, kind, helm and chainsaw
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"
+          INSTALL_DIR="$tools" scripts/develop.d/20-k8s-tools.sh kubectl kind helm chainsaw
+          echo "$tools" >> "$GITHUB_PATH"
+
+      - name: Run the end-to-end tests
+        run: scripts/e2e.sh
