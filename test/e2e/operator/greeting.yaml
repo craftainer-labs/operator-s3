@@ -1,6 +1,0 @@
-apiVersion: sample.craftainer.dev/v1alpha1
-kind: Greeting
-metadata:
-  name: hello
-spec:
-  message: Hello from Chainsaw
