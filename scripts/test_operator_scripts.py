@@ -318,7 +318,7 @@ class ChartSync(unittest.TestCase):
             (t / "scripts").mkdir()
             shutil.copy(ROOT / "scripts/check-chart-sync.sh", t / "scripts")
             crd = next((t / "charts/chart/templates/crd").glob("*.yaml"))
-            crd.write_text(crd.read_text().replace("maxLength: 256", "maxLength: 255"))
+            crd.write_text(re.sub(r"maxLength: (\d+)", lambda m: f"maxLength: {int(m.group(1)) + 1}", crd.read_text(), count=1))
             r = run(["scripts/check-chart-sync.sh"], cwd=t)
             self.assertEqual(r.returncode, 1)
             self.assertIn("differs from config/crd", r.stderr)

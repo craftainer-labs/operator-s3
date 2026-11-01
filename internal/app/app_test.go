@@ -242,16 +242,32 @@ func TestRunServesSecuredMetricsAndWebhooks(t *testing.T) {
 func TestRunWithPlainMetricsAndNoWebhooks(t *testing.T) {
 	g := NewWithT(t)
 	probe, metrics := freeAddr(t), freeAddr(t)
+	// An Option adjusts the manager's options before it is created.
+	shortShutdown := func(o *ctrl.Options) {
+		d := 5 * time.Second
+		o.GracefulShutdownTimeout = &d
+	}
 	stop := start(t, []string{
 		"--health-probe-bind-address=" + probe,
 		"--metrics-bind-address=" + metrics, "--metrics-secure=false",
 		"--webhook-port=-1",
-	})
+	}, shortShutdown)
 	defer func() { _ = stop() }()
 
 	waitForOK(t, "http://"+probe+"/healthz")
 	waitForOK(t, "http://"+metrics+"/metrics")
 	g.Expect(stop()).To(Succeed())
+}
+
+func TestRunReportsASetupError(t *testing.T) {
+	g := NewWithT(t)
+	boom := errors.New("boom")
+	orig := setupManager
+	setupManager = func(ctrl.Manager, bool) error { return boom }
+	defer func() { setupManager = orig }()
+
+	err := Run(context.Background(), []string{"--health-probe-bind-address=0", "--metrics-bind-address=0", "--webhook-port=-1"}, getConfig, io.Discard)
+	g.Expect(err).To(MatchError(boom))
 }
 
 func TestRunStepsReportsTheFailingStep(t *testing.T) {

@@ -202,7 +202,7 @@ func Run(ctx context.Context, args []string, getConfig func() (*rest.Config, err
 	if err != nil {
 		return fmt.Errorf("create the manager: %w", err)
 	}
-	if err := setup(mgr, s.webhookPort >= 0); err != nil {
+	if err := setupManager(mgr, s.webhookPort >= 0); err != nil {
 		return err
 	}
 	ctrl.Log.WithName("setup").Info("starting manager")
@@ -225,6 +225,10 @@ type setupStep struct {
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets;bucketaccesses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores/status;objectstores/status;buckets/status;bucketaccesses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets/finalizers;bucketaccesses/finalizers,verbs=update
+
+// setupManager is a variable so a test can make the set-up fail: no step can
+// fail on a healthy manager.
+var setupManager = setup
 
 // setup registers the probes and, when they are enabled, the webhooks. There
 // are no controllers yet.
