@@ -5,32 +5,49 @@ metadata:
     alm-examples: '[]'
     capabilities: Basic Install
     categories: Developer Tools
-    description: A Kubernetes operator built from craftainer/template-k8s-operator.
+    description: A Kubernetes operator for S3 buckets and access keys on RustFS.
     # Pod Security `restricted` and a suggested install namespace for OLM v0
     # (OLM v1 installs into the ClusterExtension's namespace).
-    operatorframework.io/suggested-namespace: template-k8s-operator-system
+    operatorframework.io/suggested-namespace: operator-s3-system
     # OpenShift infrastructure features (EB-5): "disconnected" is true when
     # every image the operator runs is listed in spec.relatedImages (the
     # bundle step pins and lists the manager image). Add "proxy-aware" once
     # the operator honours HTTP(S)_PROXY/NO_PROXY, and "fips-compliant" for a
     # build with GOFIPS140 (see the Dockerfile) run with GODEBUG=fips140=on.
     operators.openshift.io/infrastructure-features: '["disconnected"]'
-    repository: https://github.com/craftainer/template-k8s-operator
-  name: template-k8s-operator.v0.0.0
+    repository: https://github.com/craftainer-labs/operator-s3
+  name: operator-s3.v0.0.0
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
   customresourcedefinitions:
     owned:
-    - description: Greeting is the Schema for the greetings API.
-      displayName: Greeting
-      kind: Greeting
-      name: greetings.sample.craftainer.dev
+    - description: BucketAccess is an access key on a Bucket, written to a binding Secret.
+      displayName: Bucket Access
+      kind: BucketAccess
+      name: bucketaccesses.s3.craftainer.dev
+      version: v1alpha1
+    - description: Bucket is a bucket on an object store.
+      displayName: Bucket
+      kind: Bucket
+      name: buckets.s3.craftainer.dev
+      version: v1alpha1
+    - description: ClusterObjectStore is a cluster-scoped object store that namespaces may claim from.
+      displayName: Cluster Object Store
+      kind: ClusterObjectStore
+      name: clusterobjectstores.s3.craftainer.dev
+      version: v1alpha1
+    - description: ObjectStore is an object store that only its own namespace may claim from.
+      displayName: Object Store
+      kind: ObjectStore
+      name: objectstores.s3.craftainer.dev
       version: v1alpha1
   description: |-
-    A sample operator. Instances replace this text with what the operator does,
-    how to configure it and what it needs from the cluster.
-  displayName: Template K8s Operator
+    Provisions S3 buckets and per-bucket access keys on a RustFS object store
+    from Kubernetes resources. A ClusterObjectStore or ObjectStore names the
+    store and its admin credentials; a Bucket and a BucketAccess in a team's
+    namespace claim from it.
+  displayName: S3 Operator
   install:
     spec:
       deployments: null
@@ -51,7 +68,7 @@ spec:
   - craftainer
   links:
   - name: Source
-    url: https://github.com/craftainer/template-k8s-operator
+    url: https://github.com/craftainer-labs/operator-s3
   maintainers:
   - email: maintainers@example.com
     name: Maintainers

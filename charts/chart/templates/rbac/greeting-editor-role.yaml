@@ -11,10 +11,10 @@ metadata:
 {{- end }}
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/name: {{ include "template-k8s-operator.name" . }}
+    app.kubernetes.io/name: {{ include "operator-s3.name" . }}
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "greeting-editor-role" "context" $) }}
+  name: {{ include "operator-s3.resourceName" (dict "suffix" "greeting-editor-role" "context" $) }}
 rules:
 - apiGroups:
   - sample.craftainer.dev

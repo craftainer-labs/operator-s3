@@ -4,15 +4,15 @@ kind: ValidatingWebhookConfiguration
 metadata:
   annotations:
     {{- if .Values.certManager.enabled }}
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "template-k8s-operator.resourceName" (dict "suffix" "serving-cert" "context" $) }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "operator-s3.resourceName" (dict "suffix" "serving-cert" "context" $) }}
     {{- end }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
+  name: {{ include "operator-s3.resourceName" (dict "suffix" "validating-webhook-configuration" "context" $) }}
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
       namespace: {{ .Release.Namespace }}
       path: /validate-sample-craftainer-dev-v1alpha1-greeting
   failurePolicy: Fail

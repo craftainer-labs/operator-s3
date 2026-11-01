@@ -9,7 +9,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/craftainer/template-k8s-operator/internal/app"
+	"github.com/craftainer-labs/operator-s3/internal/app"
 )
 
 func main() {

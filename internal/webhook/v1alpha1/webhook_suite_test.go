@@ -22,7 +22,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	samplev1alpha1 "github.com/craftainer/template-k8s-operator/api/v1alpha1"
+	samplev1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
 // The envtest suite serves the webhook from a real manager and registers it

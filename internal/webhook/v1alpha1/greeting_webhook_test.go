@@ -9,7 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	samplev1alpha1 "github.com/craftainer/template-k8s-operator/api/v1alpha1"
+	samplev1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
 func greetingWith(message string) *samplev1alpha1.Greeting {

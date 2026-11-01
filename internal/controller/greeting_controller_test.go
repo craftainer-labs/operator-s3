@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	samplev1alpha1 "github.com/craftainer/template-k8s-operator/api/v1alpha1"
+	samplev1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
 var _ = Describe("Greeting controller", func() {

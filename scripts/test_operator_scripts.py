@@ -172,7 +172,7 @@ class Refs(unittest.TestCase):
         self.assertEqual(refs["bundle"], "ghcr.io/craftainer-labs/operator-db-bundle")
         self.assertEqual(refs["catalog"], "ghcr.io/craftainer-labs/operator-db-catalog")
         self.assertEqual(refs["chart_repo"], "oci://ghcr.io/craftainer-labs/charts")
-        self.assertEqual(refs["chart"], "ghcr.io/craftainer-labs/charts/template-k8s-operator")
+        self.assertEqual(refs["chart"], "ghcr.io/craftainer-labs/charts/operator-s3")
 
     def test_image_name_override_applies_like_the_image_release(self):
         refs = self.parse(self.refs(OCI_IMAGE_NAME="Acme/Custom"))

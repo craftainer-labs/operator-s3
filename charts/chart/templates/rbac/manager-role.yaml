@@ -8,7 +8,7 @@ metadata:
 {{- if .Values.rbac.namespaced }}
   namespace: {{ .Release.Namespace }}
 {{- end }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+  name: {{ include "operator-s3.resourceName" (dict "suffix" "manager-role" "context" $) }}
 rules:
 - apiGroups:
   - ""

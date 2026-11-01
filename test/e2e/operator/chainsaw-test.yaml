@@ -18,7 +18,7 @@ spec:
             timeout: 5m
             env:
               - name: RELEASE
-                value: template-k8s-operator
+                value: operator-s3
             content: |
               set -eu
               helm upgrade --install "$RELEASE" "$E2E_CHART_DIR" --namespace "$NAMESPACE" \
@@ -33,12 +33,12 @@ spec:
               apiVersion: apps/v1
               kind: Deployment
               metadata:
-                name: template-k8s-operator-controller-manager
+                name: operator-s3-controller-manager
               status:
                 availableReplicas: 1
       cleanup:
         - script:
-            content: helm uninstall template-k8s-operator --namespace "$NAMESPACE" --ignore-not-found
+            content: helm uninstall operator-s3 --namespace "$NAMESPACE" --ignore-not-found
 
     - name: runs as an arbitrary UID with leader election
       try:
@@ -54,7 +54,7 @@ spec:
               apiVersion: coordination.k8s.io/v1
               kind: Lease
               metadata:
-                name: template-k8s-operator.craftainer.dev
+                name: operator-s3.craftainer.dev
               (spec.holderIdentity != null): true
 
     - name: a Greeting becomes Ready
@@ -170,10 +170,10 @@ spec:
             timeout: 5m
             content: |
               set -eu
-              svc="template-k8s-operator-controller-manager-metrics-service.${NAMESPACE}.svc:8443"
+              svc="operator-s3-controller-manager-metrics-service.${NAMESPACE}.svc:8443"
               kubectl create serviceaccount metrics-client -n "$NAMESPACE"
               kubectl create clusterrolebinding "e2e-metrics-${NAMESPACE}" \
-                --clusterrole=template-k8s-operator-metrics-reader --serviceaccount="${NAMESPACE}:metrics-client"
+                --clusterrole=operator-s3-metrics-reader --serviceaccount="${NAMESPACE}:metrics-client"
               token=$(kubectl create token metrics-client -n "$NAMESPACE")
               # curl runs in `default`: the test namespace enforces `restricted`.
               kubectl run "metrics-curl" -n default --rm -i --restart=Never \

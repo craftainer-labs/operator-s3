@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	samplev1alpha1 "github.com/craftainer/template-k8s-operator/api/v1alpha1"
+	samplev1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
 const (

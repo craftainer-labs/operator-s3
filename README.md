@@ -1,33 +1,41 @@
-# template-k8s-operator
+# operator-s3
 
 > [!NOTE]
 > This repository is vibe coded with [Claude](https://claude.com/product/claude-code).
 
-A template for Kubernetes operators written in Go on
-[kubebuilder](https://book.kubebuilder.io/) v4: an instance of
-[`template-docker`](https://github.com/craftainer/template-docker) (and so of
-[`template-base`](https://github.com/craftainer/template-base)) that is itself
-a template. Create an operator from it and get:
+A Kubernetes operator that provisions S3 buckets and per-bucket access keys
+on a [RustFS](https://github.com/rustfs/rustfs) object store, in the API group
+`s3.craftainer.dev`. It is an instance of
+[`template-k8s-operator`](https://github.com/craftainer/template-k8s-operator)
+(and so of `template-docker` and `template-base`) and follows the CRD
+conventions of
+[`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go).
+See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared by every
+instance.
 
-- the kubebuilder v4 layout and a sample API (`Greeting`, group
-  `sample.craftainer.dev`) that follows the family's CRD conventions;
-- a manager with leader election, authenticated HTTPS metrics, probes and
-  cert-manager-issued webhook certificates;
-- unit tests, envtest suites and a kind + [Chainsaw](https://kyverno.github.io/chainsaw/)
-  end-to-end test, behind a 100% coverage gate on hand-written code;
-- a Helm chart ([kubebuilder `helm/v2-alpha`](https://book.kubebuilder.io/plugins/available/helm-v2-alpha)),
-  published as OCI;
-- an OLM bundle and file-based catalog ([operator-sdk](https://sdk.operatorframework.io/),
-  installable with OLM v0 and OLM v1's `ClusterExtension`);
-- a distroless static `nonroot` image that runs under an arbitrary UID;
-- the Go tooling of `template-go-module` (pinned, checksummed toolchain,
-  golangci-lint v2, govulncheck) and signed, attested releases.
+Status: the API types, CRDs and admission webhooks are in place; the
+controllers that act on them are added in later changes, so the manager
+serves the webhooks and nothing reconciles yet.
 
-See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for how it works and what an
-instance changes, and [`docs/adrs/`](docs/adrs/) for why
-([0002](docs/adrs/0002-kubernetes-operator-template.md) the template's design,
-[0003](docs/adrs/0003-release-extras-and-supply-chain.md) release extras and
-the supply chain).
+## API
+
+All kinds are `v1alpha1`. The field tables, defaults and validation are in
+`lib-operator-go`'s
+[`docs/crd-drafts.md`](https://github.com/craftainer-labs/lib-operator-go/blob/main/docs/crd-drafts.md)
+and
+[ADR 0002](https://github.com/craftainer-labs/lib-operator-go/blob/main/docs/adrs/0002-operator-crd-conventions.md).
+
+| Kind | Scope | What it is |
+| --- | --- | --- |
+| `ClusterObjectStore` | cluster | A RustFS endpoint and its admin credentials, usable from the namespaces in `allowedNamespaces` |
+| `ObjectStore` | namespaced | The same for one namespace |
+| `Bucket` | namespaced | A bucket on a store; `deletionPolicy` defaults to the operator's `DEFAULT_DATA_DELETION_POLICY` (`Retain` when unset) |
+| `BucketAccess` | namespaced | An access key on a `Bucket`, written to a binding Secret of type `servicebinding.io/s3` |
+
+The admission webhooks check what the schema cannot: an `endpoint` that is a
+well-formed `https` URL, a `proxyURL` with a `http`, `https` or `socks5`
+scheme, and a `Bucket` quota of at least one byte. Defaults and every other
+rule are in the CRD schema (OpenAPI and CEL).
 
 ## Quick start
 
@@ -59,23 +67,6 @@ attested, and missing ones are published and attested. SLSA provenance must
 describe the run that built the artifact, so a resumed run does not claim it:
 an existing artifact without provenance is named in a warning, and if
 provenance is required for it, cut a new patch version instead.
-
-## Creating an operator from this template
-
-1. Create the repository from this template, then set
-   `.github/template-sync-state.json` to `craftainer/template-docker` at the
-   tag the template was created at (a repository created from a template
-   starts with its parent's state file).
-2. Rename: the Go module in `go.mod` and every import, `OPERATOR_NAME`,
-   `LeaderElectionID` and `EventRecorderName` in `internal/app`, the chart
-   (`charts/chart/Chart.yaml`, `values.yaml`: `manager.image.repository`), the
-   CSV base file and its name in `config/manifests`, `namePrefix` and
-   `namespace` in the kustomizations, and the labels in `config/`.
-3. Replace the sample API: `kubebuilder create api` / `create webhook` for your
-   kinds, delete `Greeting`, run `make manifests generate`, update the chart
-   (see `docs/TEMPLATE.md`, "Helm chart") and `test/e2e/operator`.
-4. Set the repository variable `OCI_REGISTRY=ghcr.io` (the image release and
-   `release-extras.yml` both use it).
 
 ## License
 
