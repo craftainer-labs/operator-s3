@@ -7,9 +7,9 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
 )
 
+// +kubebuilder:validation:XValidation:rule="has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != ''",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
+
 // ClusterObjectStoreSpec defines the desired state of ClusterObjectStore.
-//
-// +kubebuilder:validation:XValidation:rule="has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != ”",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
 type ClusterObjectStoreSpec struct {
 	common.ServerCommon `json:",inline"`
 	ObjectStoreConfig   `json:",inline"`
