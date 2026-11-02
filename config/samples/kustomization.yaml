@@ -1,4 +1,7 @@
 ## Append samples of your project ##
 resources:
-- sample_v1alpha1_greeting.yaml
+- s3_v1alpha1_clusterobjectstore.yaml
+- s3_v1alpha1_objectstore.yaml
+- s3_v1alpha1_bucket.yaml
+- s3_v1alpha1_bucketaccess.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,6 +1,10 @@
-// Package v1alpha1 contains API Schema definitions for the sample v1alpha1 API group.
+// Package v1alpha1 contains the API schema definitions of the
+// s3.craftainer.dev group, version v1alpha1: ClusterObjectStore, ObjectStore,
+// Bucket and BucketAccess. The shared blocks (server, claim and status
+// fields) come from lib-operator-go's pkg/apis/common; docs/ and the
+// lib-operator-go ADR 0002 say what each field means.
 // +kubebuilder:object:generate=true
-// +groupName=sample.craftainer.dev
+// +groupName=s3.craftainer.dev
 package v1alpha1
 
 import (
@@ -12,7 +16,7 @@ import (
 var (
 	// SchemeGroupVersion is group version used to register these objects.
 	// This name is used by applyconfiguration generators (e.g. controller-gen).
-	SchemeGroupVersion = schema.GroupVersion{Group: "sample.craftainer.dev", Version: "v1alpha1"}
+	SchemeGroupVersion = schema.GroupVersion{Group: "s3.craftainer.dev", Version: "v1alpha1"}
 
 	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
 	GroupVersion = SchemeGroupVersion

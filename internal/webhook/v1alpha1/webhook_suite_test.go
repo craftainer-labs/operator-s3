@@ -22,7 +22,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	samplev1alpha1 "github.com/craftainer/template-k8s-operator/api/v1alpha1"
+	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
 // The envtest suite serves the webhook from a real manager and registers it
@@ -49,7 +49,7 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
-	Expect(samplev1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(s3v1alpha1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
@@ -78,7 +78,9 @@ var _ = BeforeSuite(func() {
 		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	Expect(err).NotTo(HaveOccurred())
-	Expect(SetupGreetingWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupClusterObjectStoreWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupObjectStoreWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupBucketWebhookWithManager(mgr)).To(Succeed())
 
 	go func() {
 		defer GinkgoRecover()

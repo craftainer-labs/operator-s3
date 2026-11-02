@@ -4,17 +4,17 @@ kind: Certificate
 metadata:
   labels:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    app.kubernetes.io/name: {{ include "template-k8s-operator.name" . }}
+    app.kubernetes.io/name: {{ include "operator-s3.name" . }}
     helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
     app.kubernetes.io/instance: {{ .Release.Name }}
-  name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "metrics-certs" "context" $) }}
+  name: {{ include "operator-s3.resourceName" (dict "suffix" "metrics-certs" "context" $) }}
   namespace: {{ .Release.Namespace }}
 spec:
   dnsNames:
-  - {{ include "template-k8s-operator.resourceName" (dict "suffix" "controller-manager-metrics-service" "context" $) }}.{{ include "template-k8s-operator.namespaceName" $ }}.svc
-  - {{ include "template-k8s-operator.resourceName" (dict "suffix" "controller-manager-metrics-service" "context" $) }}.{{ include "template-k8s-operator.namespaceName" $ }}.svc.cluster.local
+  - {{ include "operator-s3.resourceName" (dict "suffix" "controller-manager-metrics-service" "context" $) }}.{{ include "operator-s3.namespaceName" $ }}.svc
+  - {{ include "operator-s3.resourceName" (dict "suffix" "controller-manager-metrics-service" "context" $) }}.{{ include "operator-s3.namespaceName" $ }}.svc.cluster.local
   issuerRef:
     kind: Issuer
-    name: {{ include "template-k8s-operator.resourceName" (dict "suffix" "selfsigned-issuer" "context" $) }}
+    name: {{ include "operator-s3.resourceName" (dict "suffix" "selfsigned-issuer" "context" $) }}
   secretName: metrics-server-cert
 {{- end }}

@@ -1,0 +1,83 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: '[]'
+    capabilities: Basic Install
+    categories: Developer Tools
+    description: A Kubernetes operator for S3 buckets and access keys on RustFS.
+    # Pod Security `restricted` and a suggested install namespace for OLM v0
+    # (OLM v1 installs into the ClusterExtension's namespace).
+    operatorframework.io/suggested-namespace: operator-s3-system
+    # OpenShift infrastructure features (EB-5): "disconnected" is true when
+    # every image the operator runs is listed in spec.relatedImages (the
+    # bundle step pins and lists the manager image). Add "proxy-aware" once
+    # the operator honours HTTP(S)_PROXY/NO_PROXY, and "fips-compliant" for a
+    # build with GOFIPS140 (see the Dockerfile) run with GODEBUG=fips140=on.
+    operators.openshift.io/infrastructure-features: '["disconnected"]'
+    repository: https://github.com/craftainer-labs/operator-s3
+  name: operator-s3.v0.0.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - description: BucketAccess is an access key on a Bucket, written to a binding Secret.
+      displayName: Bucket Access
+      kind: BucketAccess
+      name: bucketaccesses.s3.craftainer.dev
+      version: v1alpha1
+    - description: Bucket is a bucket on an object store.
+      displayName: Bucket
+      kind: Bucket
+      name: buckets.s3.craftainer.dev
+      version: v1alpha1
+    - description: ClusterObjectStore is a cluster-scoped object store that namespaces may claim from.
+      displayName: Cluster Object Store
+      kind: ClusterObjectStore
+      name: clusterobjectstores.s3.craftainer.dev
+      version: v1alpha1
+    - description: ObjectStore is an object store that only its own namespace may claim from.
+      displayName: Object Store
+      kind: ObjectStore
+      name: objectstores.s3.craftainer.dev
+      version: v1alpha1
+  description: |-
+    Provisions S3 buckets and per-bucket access keys on a RustFS object store
+    from Kubernetes resources. A ClusterObjectStore or ObjectStore names the
+    store and its admin credentials; a Bucket and a BucketAccess in a team's
+    namespace claim from it.
+  displayName: S3 Operator
+  install:
+    spec:
+      deployments: null
+    strategy: ""
+  # AllNamespaces is the only mode OLM v1 (ClusterExtension) installs without
+  # legacy compatibility; OLM v0 supports it too.
+  installModes:
+  - supported: false
+    type: OwnNamespace
+  - supported: false
+    type: SingleNamespace
+  - supported: false
+    type: MultiNamespace
+  - supported: true
+    type: AllNamespaces
+  keywords:
+  - operator
+  - craftainer
+  links:
+  - name: Source
+    url: https://github.com/craftainer-labs/operator-s3
+  maintainers:
+  - email: maintainers@example.com
+    name: Maintainers
+  maturity: alpha
+  minKubeVersion: 1.33.0
+  provider:
+    name: craftainer
+    url: https://github.com/craftainer
+  # The manager image is added by `make bundle` (scripts/bundle-fixup.sh) with
+  # the digest it was built for.
+  relatedImages: []
+  version: 0.0.0

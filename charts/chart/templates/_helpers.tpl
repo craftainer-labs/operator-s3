@@ -1,7 +1,7 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "template-k8s-operator.name" -}}
+{{- define "operator-s3.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
@@ -10,7 +10,7 @@ Create a default fully qualified app name.
 We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
 If release name contains chart name it will be used as a full name.
 */}}
-{{- define "template-k8s-operator.fullname" -}}
+{{- define "operator-s3.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -27,7 +27,7 @@ If release name contains chart name it will be used as a full name.
 Namespace for generated references.
 Always uses the Helm release namespace.
 */}}
-{{- define "template-k8s-operator.namespaceName" -}}
+{{- define "operator-s3.namespaceName" -}}
 {{- .Release.Namespace }}
 {{- end }}
 
@@ -38,8 +38,8 @@ Takes a dict with:
   - .context: Template context (root context with .Values, .Release, etc.)
 Dynamically calculates safe truncation to ensure total name length <= 63 chars.
 */}}
-{{- define "template-k8s-operator.resourceName" -}}
-{{- $fullname := include "template-k8s-operator.fullname" .context }}
+{{- define "operator-s3.resourceName" -}}
+{{- $fullname := include "operator-s3.fullname" .context }}
 {{- $suffix := .suffix }}
 {{- $maxLen := sub 62 (len $suffix) | int }}
 {{- if gt (len $fullname) $maxLen }}
@@ -54,9 +54,9 @@ ServiceAccount name to use.
 When enabled, use the chart's ServiceAccount name.
 When disabled, serviceAccount.name must be set; use "default" to pick the namespace default ServiceAccount.
 */}}
-{{- define "template-k8s-operator.serviceAccountName" -}}
+{{- define "operator-s3.serviceAccountName" -}}
 {{- if .Values.serviceAccount.enabled }}
-{{- include "template-k8s-operator.resourceName" (dict "suffix" "controller-manager" "context" .) }}
+{{- include "operator-s3.resourceName" (dict "suffix" "controller-manager" "context" .) }}
 {{- else }}
 {{- required "serviceAccount.name is required when serviceAccount.enabled=false (set name: default explicitly to use the namespace default ServiceAccount)" .Values.serviceAccount.name }}
 {{- end }}
@@ -67,7 +67,7 @@ The manager image: <registry>/<repository>@<digest>, or :<tag> (default
 Chart.appVersion) without a digest. global.imageRegistry overrides the registry,
 for mirrors in air-gapped clusters.
 */}}
-{{- define "template-k8s-operator.image" -}}
+{{- define "operator-s3.image" -}}
 {{- $image := .Values.manager.image -}}
 {{- $registry := default $image.registry (default "" (.Values.global | default dict).imageRegistry) -}}
 {{- $repository := printf "%s/%s" $registry $image.repository | trimPrefix "/" -}}

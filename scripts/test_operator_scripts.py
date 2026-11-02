@@ -172,7 +172,8 @@ class Refs(unittest.TestCase):
         self.assertEqual(refs["bundle"], "ghcr.io/craftainer-labs/operator-db-bundle")
         self.assertEqual(refs["catalog"], "ghcr.io/craftainer-labs/operator-db-catalog")
         self.assertEqual(refs["chart_repo"], "oci://ghcr.io/craftainer-labs/charts")
-        self.assertEqual(refs["chart"], "ghcr.io/craftainer-labs/charts/template-k8s-operator")
+        chart_name = re.search(r"^name:\s*(\S+)\s*$", (ROOT / "charts/chart/Chart.yaml").read_text(), re.M).group(1)
+        self.assertEqual(refs["chart"], f"ghcr.io/craftainer-labs/charts/{chart_name}")
 
     def test_image_name_override_applies_like_the_image_release(self):
         refs = self.parse(self.refs(OCI_IMAGE_NAME="Acme/Custom"))
@@ -317,7 +318,7 @@ class ChartSync(unittest.TestCase):
             (t / "scripts").mkdir()
             shutil.copy(ROOT / "scripts/check-chart-sync.sh", t / "scripts")
             crd = next((t / "charts/chart/templates/crd").glob("*.yaml"))
-            crd.write_text(crd.read_text().replace("maxLength: 256", "maxLength: 255"))
+            crd.write_text(re.sub(r"maxLength: (\d+)", lambda m: f"maxLength: {int(m.group(1)) + 1}", crd.read_text(), count=1))
             r = run(["scripts/check-chart-sync.sh"], cwd=t)
             self.assertEqual(r.returncode, 1)
             self.assertIn("differs from config/crd", r.stderr)

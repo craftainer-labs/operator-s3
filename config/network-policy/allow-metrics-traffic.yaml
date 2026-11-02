@@ -4,7 +4,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   labels:
-    app.kubernetes.io/name: template-k8s-operator
+    app.kubernetes.io/name: operator-s3
     app.kubernetes.io/managed-by: kustomize
   name: allow-metrics-traffic
   namespace: system
@@ -12,7 +12,7 @@ spec:
   podSelector:
     matchLabels:
       control-plane: controller-manager
-      app.kubernetes.io/name: template-k8s-operator
+      app.kubernetes.io/name: operator-s3
   policyTypes:
     - Ingress
   ingress:

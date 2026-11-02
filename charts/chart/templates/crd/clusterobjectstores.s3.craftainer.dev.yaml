@@ -1,0 +1,340 @@
+{{- if .Values.crd.enabled }}
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crd.keep }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: clusterobjectstores.s3.craftainer.dev
+spec:
+  group: s3.craftainer.dev
+  names:
+    categories:
+    - craftainer
+    kind: ClusterObjectStore
+    listKind: ClusterObjectStoreList
+    plural: clusterobjectstores
+    singular: clusterobjectstore
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterObjectStore is a cluster-scoped object store that the namespaces in
+          allowedNamespaces may claim from.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of ClusterObjectStore
+            properties:
+              adminCredentialsSecretRef:
+                description: AdminCredentialsSecretRef names the admin credentials.
+                properties:
+                  key:
+                    description: Key limits the credentials to one key of the Secret.
+                    maxLength: 253
+                    type: string
+                  name:
+                    description: Name of the Secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is required on a cluster server (the operator namespace) and
+                      forbidden on a namespaced one; the operator's own CEL enforces that.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
+              allowedNamespaces:
+                description: |-
+                  allowedNamespaces says which namespaces may claim from this store. It is
+                  required, so a store without it is rejected: it fails closed.
+                properties:
+                  from:
+                    description: From selects All namespaces or those matching Selector.
+                    enum:
+                    - All
+                    - Selector
+                    type: string
+                  selector:
+                    description: Selector is required if and only if From is Selector.
+                    properties:
+                      matchExpressions:
+                        description: MatchExpressions are label requirements, ANDed.
+                        items:
+                          description: |-
+                            LabelSelectorRequirement mirrors metav1.LabelSelectorRequirement with the
+                            bounds CEL cost estimation needs.
+                          properties:
+                            key:
+                              description: Key is the label key.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            operator:
+                              description: Operator relates the key to the values.
+                              enum:
+                              - In
+                              - NotIn
+                              - Exists
+                              - DoesNotExist
+                              type: string
+                            values:
+                              description: Values are the label values for In and
+                                NotIn.
+                              items:
+                                maxLength: 63
+                                type: string
+                              maxItems: 20
+                              type: array
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        maxItems: 20
+                        type: array
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: MatchLabels requires each key to have the value.
+                        maxProperties: 20
+                        type: object
+                    type: object
+                required:
+                - from
+                type: object
+                x-kubernetes-validations:
+                - message: selector must not be set when from is All
+                  rule: self.from != 'All' || !has(self.selector)
+                - message: selector is required when from is Selector
+                  rule: self.from != 'Selector' || has(self.selector)
+                - message: 'selector must have matchLabels or matchExpressions; use
+                    from: All to allow every namespace'
+                  rule: 'self.from != ''Selector'' || !has(self.selector) || (has(self.selector.matchLabels)
+                    ? size(self.selector.matchLabels) : 0) + (has(self.selector.matchExpressions)
+                    ? size(self.selector.matchExpressions) : 0) > 0'
+              backend:
+                default: RustFS
+                description: backend is the object store implementation.
+                enum:
+                - RustFS
+                type: string
+              endpoint:
+                description: endpoint is the https URL of the store; the admin API
+                  is under it.
+                maxLength: 512
+                type: string
+                x-kubernetes-validations:
+                - message: endpoint must be an https URL
+                  rule: self.startsWith('https://')
+              healthCheckInterval:
+                description: |-
+                  HealthCheckInterval is how often the server is probed (default 1m,
+                  minimum 10s, maximum 1h).
+                maxLength: 32
+                type: string
+                x-kubernetes-validations:
+                - message: healthCheckInterval must be between 10s and 1h
+                  rule: duration(self) >= duration('10s') && duration(self) <= duration('1h')
+              pathStyle:
+                default: true
+                description: |-
+                  pathStyle selects path-style addressing (https://host/bucket) over
+                  virtual-hosted style. It is a pointer so that false survives omitempty.
+                type: boolean
+              proxyURL:
+                description: |-
+                  ProxyURL is an http, https or socks5 proxy; unset uses the process
+                  environment.
+                maxLength: 512
+                type: string
+              region:
+                default: us-east-1
+                description: region is the S3 region the store reports.
+                maxLength: 64
+                type: string
+              tls:
+                description: TLS configures verification of the backend.
+                properties:
+                  caBundle:
+                    description: CABundle replaces the system roots.
+                    properties:
+                      configMapRef:
+                        description: ConfigMapRef is a ConfigMap key holding a PEM
+                          bundle.
+                        properties:
+                          key:
+                            description: Key inside it.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret or ConfigMap.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      secretRef:
+                        description: SecretRef is a Secret key holding a PEM bundle.
+                        properties:
+                          key:
+                            description: Key inside it.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name of the Secret or ConfigMap.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of secretRef and configMapRef
+                      rule: has(self.secretRef) != has(self.configMapRef)
+                  minVersion:
+                    default: "1.2"
+                    description: MinVersion is the TLS floor.
+                    enum:
+                    - "1.2"
+                    - "1.3"
+                    type: string
+                  serverName:
+                    description: ServerName overrides the host used for certificate
+                      verification.
+                    maxLength: 253
+                    type: string
+                type: object
+            required:
+            - adminCredentialsSecretRef
+            - allowedNamespaces
+            - endpoint
+            type: object
+            x-kubernetes-validations:
+            - message: adminCredentialsSecretRef.namespace is required on a cluster-scoped
+                store
+              rule: has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace
+                != ''
+          status:
+            description: status defines the observed state of ClusterObjectStore
+            properties:
+              conditions:
+                description: Conditions holds Ready and ServerReachable.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastProbeTime:
+                description: LastProbeTime is when the server was last probed.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the metadata.generation last reconciled.
+                format: int64
+                type: integer
+              serverVersion:
+                description: ServerVersion is the version the backend reported.
+                maxLength: 64
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

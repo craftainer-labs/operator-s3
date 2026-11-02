@@ -1,15 +1,15 @@
 apiVersion: v2
-name: template-k8s-operator
-description: A Kubernetes operator built from craftainer/template-k8s-operator
+name: operator-s3
+description: A Kubernetes operator for S3 buckets and access keys on RustFS
 type: application
 # The release workflow overrides both with the release version
 # (`helm package --version X --app-version X`); these are the development values.
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.33.0-0"
-home: https://github.com/craftainer/template-k8s-operator
+home: https://github.com/craftainer-labs/operator-s3
 sources:
-  - https://github.com/craftainer/template-k8s-operator
+  - https://github.com/craftainer-labs/operator-s3
 keywords:
   - kubernetes
   - operator

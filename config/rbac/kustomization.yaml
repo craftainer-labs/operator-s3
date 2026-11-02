@@ -20,8 +20,17 @@ resources:
 - metrics_reader_role.yaml
 # For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
 # default, aiding admins in cluster management. Those roles are
-# not used by the template-k8s-operator itself. You can comment the following lines
+# not used by the operator-s3 itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- greeting_admin_role.yaml
-- greeting_editor_role.yaml
-- greeting_viewer_role.yaml
+- bucket_admin_role.yaml
+- bucket_editor_role.yaml
+- bucket_viewer_role.yaml
+- bucketaccess_admin_role.yaml
+- bucketaccess_editor_role.yaml
+- bucketaccess_viewer_role.yaml
+- clusterobjectstore_admin_role.yaml
+- clusterobjectstore_editor_role.yaml
+- clusterobjectstore_viewer_role.yaml
+- objectstore_admin_role.yaml
+- objectstore_editor_role.yaml
+- objectstore_viewer_role.yaml

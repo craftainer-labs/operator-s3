@@ -1,0 +1,15 @@
+apiVersion: s3.craftainer.dev/v1alpha1
+kind: ClusterObjectStore
+metadata:
+  labels:
+    app.kubernetes.io/name: operator-s3
+    app.kubernetes.io/managed-by: kustomize
+  name: rustfs
+spec:
+  endpoint: https://rustfs.storage.svc.cluster.local:9000
+  adminCredentialsSecretRef: {name: rustfs-admin, namespace: craftainer-system}
+  allowedNamespaces:
+    from: Selector
+    selector:
+      matchExpressions:
+        - {key: kubernetes.io/metadata.name, operator: In, values: [team-a, team-b]}

@@ -1,0 +1,327 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: bucketaccesses.s3.craftainer.dev
+spec:
+  group: s3.craftainer.dev
+  names:
+    categories:
+    - craftainer
+    kind: BucketAccess
+    listKind: BucketAccessList
+    plural: bucketaccesses
+    singular: bucketaccess
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Synced")].status
+      name: Synced
+      type: string
+    - jsonPath: .spec.serverRef.name
+      name: Server
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: BucketAccess is an access key on a Bucket, written to a binding
+          Secret.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of BucketAccess
+            properties:
+              access:
+                default: ReadWrite
+                description: access is what the key may do.
+                enum:
+                - ReadOnly
+                - ReadWrite
+                type: string
+              binding:
+                description: Binding configures the binding Secret.
+                properties:
+                  secretName:
+                    description: |-
+                      SecretName is the Secret's name; the default is the claim's name. It is
+                      immutable.
+                    maxLength: 253
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                    x-kubernetes-validations:
+                    - message: binding.secretName is immutable
+                      rule: self == oldSelf
+                type: object
+              bucketRef:
+                description: bucketRef is the Bucket the access key is for. It is
+                  immutable.
+                properties:
+                  name:
+                    description: name of the Bucket.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: bucketRef is immutable
+                  rule: self == oldSelf
+              managementPolicies:
+                default:
+                - '*'
+                description: |-
+                  ManagementPolicies limits what the controller may do to the external
+                  object (ADR 0002, section 5). The default is ["*"].
+                items:
+                  description: |-
+                    ManagementPolicy is one value of spec.managementPolicies, with Crossplane's
+                    meanings (ADR 0002, section 5).
+                  enum:
+                  - '*'
+                  - Observe
+                  - Create
+                  - Update
+                  - Delete
+                  - LateInitialize
+                  type: string
+                maxItems: 5
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: set
+                x-kubernetes-validations:
+                - message: '''*'' must stand alone'
+                  rule: '!(''*'' in self) || self.size() == 1'
+                - message: an explicit list must contain Observe
+                  rule: self == ['*'] || 'Observe' in self
+              prefix:
+                description: |-
+                  prefix restricts the key to the object keys under it, without a leading
+                  slash. Empty means the whole bucket.
+                maxLength: 1024
+                type: string
+                x-kubernetes-validations:
+                - message: prefix must not start with /
+                  rule: '!self.startsWith(''/'')'
+              rotationPolicy:
+                description: RotationPolicy turns on credential rotation.
+                properties:
+                  gracePeriod:
+                    default: 1h
+                    description: |-
+                      GracePeriod is how long the previous generation stays valid. The default
+                      is 1h; minimum 5m, maximum 168h.
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: gracePeriod must be between 5m and 168h
+                      rule: duration(self) >= duration('5m') && duration(self) <=
+                        duration('168h')
+                  interval:
+                    description: |-
+                      Interval rotates on a schedule; unset means only on the
+                      craftainer.dev/rotate annotation. Minimum 1h, maximum 8760h.
+                    maxLength: 32
+                    type: string
+                    x-kubernetes-validations:
+                    - message: interval must be between 1h and 8760h
+                      rule: duration(self) >= duration('1h') && duration(self) <=
+                        duration('8760h')
+                type: object
+              serverRef:
+                description: ServerRef selects the server. It is immutable.
+                properties:
+                  kind:
+                    description: Kind is the server kind.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                  name:
+                    description: Name is the server's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: serverRef is immutable
+                  rule: self == oldSelf
+            required:
+            - bucketRef
+            - serverRef
+            type: object
+            x-kubernetes-validations:
+            - message: serverRef.kind must be ClusterObjectStore or ObjectStore
+              rule: self.serverRef.kind in ['ClusterObjectStore', 'ObjectStore']
+            - message: rotationPolicy needs the Update management policy
+              rule: '!has(self.rotationPolicy) || self.managementPolicies == [''*'']
+                || ''Update'' in self.managementPolicies'
+          status:
+            description: status defines the observed state of BucketAccess
+            properties:
+              binding:
+                description: Binding names the binding Secret.
+                properties:
+                  name:
+                    description: |-
+                      Name is the Secret's name; its presence makes the claim a Provisioned
+                      Service.
+                    maxLength: 253
+                    type: string
+                type: object
+              conditions:
+                description: Conditions holds Ready, Synced and ServerReachable.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              externalId:
+                description: ExternalID is the backend-assigned id, where there is
+                  one.
+                maxLength: 255
+                type: string
+              externalName:
+                description: ExternalName is the name derived by naming.Tenant.
+                maxLength: 255
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is when the controller last reconciled
+                  the claim.
+                format: date-time
+                type: string
+              lateInitialized:
+                additionalProperties:
+                  type: string
+                description: LateInitialized holds the values recorded under LateInitialize.
+                maxProperties: 20
+                type: object
+                x-kubernetes-validations:
+                - message: values are at most 255 characters
+                  rule: self.all(k, size(self[k]) <= 255)
+              observedGeneration:
+                description: ObservedGeneration is the metadata.generation last reconciled.
+                format: int64
+                type: integer
+              rotation:
+                description: Rotation is the persisted rotation state.
+                properties:
+                  active:
+                    description: |-
+                      Active is the generation the binding Secret holds; empty before the first
+                      rotation.
+                    maxLength: 128
+                    type: string
+                  lastRotated:
+                    description: LastRotated is when the last RotateBegin completed.
+                    format: date-time
+                    type: string
+                  lastTrigger:
+                    description: |-
+                      LastTrigger is the last handled value of the craftainer.dev/rotate
+                      annotation.
+                    maxLength: 253
+                    type: string
+                  previous:
+                    description: Previous is the generation awaiting retirement.
+                    maxLength: 128
+                    type: string
+                  retireAfter:
+                    description: |-
+                      RetireAfter is the end of the grace period. A grace period is in force
+                      while it or Previous is set.
+                    format: date-time
+                    type: string
+                  sequence:
+                    description: Sequence counts completed RotateBegin calls.
+                    format: int64
+                    type: integer
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

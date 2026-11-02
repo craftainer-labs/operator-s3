@@ -4,8 +4,8 @@
 # controller-runtime serves from by default, so the cert-manager Issuer and
 # Certificate, and the --webhook-cert-path patch, are left out. The CSV base
 # in bases/ is read by `operator-sdk generate bundle` itself, not listed here.
-namespace: template-k8s-operator-system
-namePrefix: template-k8s-operator-
+namespace: operator-s3-system
+namePrefix: operator-s3-
 
 resources:
 - ../crd

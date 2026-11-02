@@ -5,7 +5,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   labels:
-    app.kubernetes.io/name: template-k8s-operator
+    app.kubernetes.io/name: operator-s3
     app.kubernetes.io/managed-by: kustomize
   name: selfsigned-issuer
   namespace: system

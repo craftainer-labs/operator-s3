@@ -23,7 +23,6 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
@@ -51,13 +50,6 @@ func TestMain(m *testing.M) {
 		code = 1
 	}
 	os.Exit(code)
-}
-
-// skipNameValidation lets several managers register the same controller name
-// in one test process (controller-runtime otherwise rejects the second).
-func skipNameValidation(o *ctrl.Options) {
-	skip := true
-	o.Controller = config.Controller{SkipNameValidation: &skip}
 }
 
 func freeAddr(t *testing.T) string {
@@ -204,7 +196,7 @@ func TestRunReportsAStartError(t *testing.T) {
 		"--health-probe-bind-address=0", "--metrics-bind-address=0",
 		"--webhook-port=" + portOf(freeAddr(t)), "--webhook-cert-path=" + t.TempDir(),
 	}
-	err := Run(context.Background(), args, getConfig, io.Discard, skipNameValidation)
+	err := Run(context.Background(), args, getConfig, io.Discard)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("run the manager"))
 }
@@ -227,7 +219,7 @@ func TestRunServesSecuredMetricsAndWebhooks(t *testing.T) {
 		"--webhook-port=" + portOf(hook), "--webhook-cert-path=" + certs,
 		"--leader-elect", "--leader-election-namespace=default",
 		"--enable-http2", "--zap-devel",
-	}, skipNameValidation)
+	})
 	defer func() { _ = stop() }()
 
 	waitForOK(t, "http://"+probe+"/healthz")
@@ -250,11 +242,16 @@ func TestRunServesSecuredMetricsAndWebhooks(t *testing.T) {
 func TestRunWithPlainMetricsAndNoWebhooks(t *testing.T) {
 	g := NewWithT(t)
 	probe, metrics := freeAddr(t), freeAddr(t)
+	// An Option adjusts the manager's options before it is created.
+	shortShutdown := func(o *ctrl.Options) {
+		d := 5 * time.Second
+		o.GracefulShutdownTimeout = &d
+	}
 	stop := start(t, []string{
 		"--health-probe-bind-address=" + probe,
 		"--metrics-bind-address=" + metrics, "--metrics-secure=false",
 		"--webhook-port=-1",
-	}, skipNameValidation)
+	}, shortShutdown)
 	defer func() { _ = stop() }()
 
 	waitForOK(t, "http://"+probe+"/healthz")
@@ -262,20 +259,33 @@ func TestRunWithPlainMetricsAndNoWebhooks(t *testing.T) {
 	g.Expect(stop()).To(Succeed())
 }
 
-func TestRunRejectsASecondControllerWithTheSameName(t *testing.T) {
+func TestRunReportsASetupError(t *testing.T) {
 	g := NewWithT(t)
-	args := []string{"--health-probe-bind-address=0", "--metrics-bind-address=0", "--webhook-port=-1"}
+	boom := errors.New("boom")
+	orig := setupManager
+	setupManager = func(ctrl.Manager, bool) error { return boom }
+	defer func() { setupManager = orig }()
 
-	// Names are checked process-wide, so the first run registers "greeting"
-	// and the second must fail while setting up the controller.
-	stop := start(t, args)
-	defer func() { _ = stop() }()
-	time.Sleep(2 * time.Second)
-	g.Expect(stop()).To(Succeed())
+	err := Run(context.Background(), []string{"--health-probe-bind-address=0", "--metrics-bind-address=0", "--webhook-port=-1"}, getConfig, io.Discard)
+	g.Expect(err).To(MatchError(boom))
+}
 
-	err := Run(context.Background(), args, getConfig, io.Discard)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("set up the greeting controller"))
+func TestRunStepsReportsTheFailingStep(t *testing.T) {
+	g := NewWithT(t)
+	boom := errors.New("boom")
+	var ran []string
+	record := func(name string, err error) setupStep {
+		return setupStep{name, func(ctrl.Manager) error { ran = append(ran, name); return err }}
+	}
+
+	g.Expect(runSteps(nil, []setupStep{record("a", nil), record("b", nil)})).To(Succeed())
+	g.Expect(ran).To(Equal([]string{"a", "b"}))
+
+	ran = nil
+	err := runSteps(nil, []setupStep{record("a", nil), record("b", boom), record("c", nil)})
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(ContainSubstring("set up the b"))
+	g.Expect(ran).To(Equal([]string{"a", "b"}))
 }
 
 type fakeChecks struct{ healthzErr, readyzErr error }
