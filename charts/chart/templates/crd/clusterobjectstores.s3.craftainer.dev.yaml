@@ -196,7 +196,8 @@ spec:
                           bundle.
                         properties:
                           key:
-                            description: Key inside it.
+                            default: ca.crt
+                            description: Key inside it. Defaults to ca.crt.
                             maxLength: 253
                             minLength: 1
                             type: string
@@ -206,14 +207,14 @@ spec:
                             minLength: 1
                             type: string
                         required:
-                        - key
                         - name
                         type: object
                       secretRef:
                         description: SecretRef is a Secret key holding a PEM bundle.
                         properties:
                           key:
-                            description: Key inside it.
+                            default: ca.crt
+                            description: Key inside it. Defaults to ca.crt.
                             maxLength: 253
                             minLength: 1
                             type: string
@@ -223,7 +224,6 @@ spec:
                             minLength: 1
                             type: string
                         required:
-                        - key
                         - name
                         type: object
                     type: object
