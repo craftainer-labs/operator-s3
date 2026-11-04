@@ -103,6 +103,7 @@ replace:
   - scripts/image-scan.sh
   - scripts/image-dast.sh
   - scripts/skopeo.sh
+  - scripts/skopeo-dir.sh
   - scripts/test-image-scripts.sh
 
   # template-k8s-operator's tooling (docs/TEMPLATE.md, "Kubernetes operator
@@ -140,6 +141,11 @@ replace:
 ignore:
   # Each instance chooses its own license and copyright holder.
   - LICENSE
+
+  # Each instance's README is entirely its own (image, usage, runtime); a
+  # merge against this template's README conflicted on every sync, so it
+  # is instance-owned from creation, like the Dockerfile.
+  - README.md
 
   # The instance's own image: its Dockerfile (toolchain, build, runtime
   # stages) and the image.mk variables that tune the template's Makefile.
@@ -191,9 +197,6 @@ ignore:
   - .github/template-sync-manifest.local.yml
 
 merge:
-  # Project identity (name/description) is interpolated per instance.
-  - README.md
-
   # Baseline excludes the instance extends with its own entries.
   - .dockerignore
 

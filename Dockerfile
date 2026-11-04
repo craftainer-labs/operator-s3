@@ -18,6 +18,12 @@ ARG DEBIAN_VERSION=trixie
 # renovate: datasource=docker depName=golang
 ARG GO_VERSION=1.27.3
 
+# The CA bundle paths the template's tooling expects; also declared in
+# .devcontainer/Dockerfile (scripts/check-dockerfile-versions.sh keeps the two
+# equal). Both stages below set them as ENV.
+ARG SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ARG SSL_CERT_DIR=/etc/ssl/certs
+
 ########################################
 # builder -- compiles the manager. Runs on the build host's platform and
 # cross-compiles, so a multi-arch build needs no emulation.
@@ -25,6 +31,10 @@ ARG GO_VERSION=1.27.3
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-${DEBIAN_VERSION}@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG SSL_CERT_FILE
+ARG SSL_CERT_DIR
+ENV SSL_CERT_FILE=${SSL_CERT_FILE} \
+    SSL_CERT_DIR=${SSL_CERT_DIR}
 # GOFIPS140 selects the Go cryptographic module the binary links (EB-14):
 # pass --build-arg GOFIPS140=v1.0.0 for the frozen, validated one, and run
 # with GODEBUG=fips140=on to enforce it. Empty keeps Go's default.
@@ -51,8 +61,12 @@ FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be
 # Set by `make build` through BUILD_ARGS in image.mk; empty otherwise.
 ARG APP_VERSION=
 ARG APP_COMMIT=
+ARG SSL_CERT_FILE
+ARG SSL_CERT_DIR
 ENV APP_VERSION=${APP_VERSION} \
-    APP_COMMIT=${APP_COMMIT}
+    APP_COMMIT=${APP_COMMIT} \
+    SSL_CERT_FILE=${SSL_CERT_FILE} \
+    SSL_CERT_DIR=${SSL_CERT_DIR}
 
 COPY --from=builder /out/manager /manager
 
