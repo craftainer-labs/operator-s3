@@ -34,6 +34,9 @@ repos:
       - id: check-added-large-files
         stages: [pre-commit, manual]
       - id: check-merge-conflict
+        # Without this the hook only runs during an in-progress git merge, so
+        # conflict markers committed by a template-sync PR were never caught.
+        args: [--assume-in-merge]
         stages: [pre-commit, manual]
       - id: mixed-line-ending
         stages: [pre-commit, manual]
@@ -43,7 +46,7 @@ repos:
         stages: [pre-commit, manual]
 
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
+    rev: v4.5.0
     hooks:
       # No "manual" stage here, unlike every other hook in this file: this
       # one needs the actual commit-message file git passes at the
@@ -51,6 +54,25 @@ repos:
       # has no equivalent for.
       - id: conventional-pre-commit
         stages: [commit-msg]
+
+  # Guard for the upstream-owned scripts in .github/scripts/: base ships
+  # them to every instance, whose own ruff-format hook then checks them
+  # against .github/scripts/ruff.toml (the closest config wins), so an
+  # unformatted script here fails every Python instance after a sync. Base
+  # has no ruff dependency of its own, hence this pinned hook, scoped to
+  # that directory only. Keep the rev equal to the ruff the Python
+  # templates pin in pyproject.toml.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      - id: ruff-check
+        name: ruff check (.github/scripts)
+        files: ^\.github/scripts/.*\.py$
+        stages: [pre-commit, manual]
+      - id: ruff-format
+        name: ruff format (.github/scripts)
+        files: ^\.github/scripts/.*\.py$
+        stages: [pre-commit, manual]
 
   - repo: local
     hooks:
@@ -139,7 +161,7 @@ repos:
       # RUST_VERSION) to this entry.
       - id: check-dockerfile-versions
         name: check-dockerfile-versions (ARG defaults match across Dockerfiles)
-        entry: bash scripts/check-dockerfile-versions.sh DEBIAN_VERSION
+        entry: bash scripts/check-dockerfile-versions.sh SSL_CERT_FILE SSL_CERT_DIR
         language: system
         # Also when the check itself, or this entry (the ARG list), changes.
         files: ^((\.devcontainer/)?Dockerfile|scripts/check-dockerfile-versions\.sh|\.pre-commit-config\.yaml)$
@@ -180,7 +202,7 @@ repos:
         name: image-scripts-test (Makefile and scripts/ behaviour)
         entry: bash scripts/test-image-scripts.sh
         language: system
-        files: ^(Makefile|scripts/(check-dockerfile-versions|image-scan|image-dast|image-smoke|skopeo|test-image-scripts)\.sh)$
+        files: ^(Makefile|scripts/(check-dockerfile-versions|image-scan|image-dast|image-smoke|skopeo|skopeo-dir|test-image-scripts)\.sh)$
         pass_filenames: false
         stages: [pre-commit, manual]
 
