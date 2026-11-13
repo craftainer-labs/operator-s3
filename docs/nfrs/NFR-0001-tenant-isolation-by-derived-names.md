@@ -36,6 +36,13 @@ another tenant's objects:
 - a cluster store serves only the namespaces its `allowedNamespaces` admits
   (`server.Resolve`), and a namespaced store only its own.
 
+Known limit: the check for an existing bucket and the create are two requests,
+and RustFS answers the admin's create of an existing bucket with success, so a
+create by the same admin identity inside that gap would be adopted. The
+operator therefore needs dedicated admin credentials that no other creator
+shares; a different account gets `BucketAlreadyExists`, and a `403` on the
+check is treated as a collision.
+
 A BucketAccess may use only a Bucket of its own namespace on the same store,
 and its policy covers that bucket (and the prefix, which may not hold `*`, `?`
 or `$`) and nothing else.

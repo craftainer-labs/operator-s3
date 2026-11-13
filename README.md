@@ -128,8 +128,12 @@ A deletion blocked this way keeps the finalizer, by design.
   little later. The `Bucket` reconcile fails and retries until it is ready.
 - A bucket created by somebody else between the operator's read and its create
   is refused as a name collision: RustFS would answer the create of an existing
-  bucket with success for the admin, so the client checks first. The window
-  between that check and the create is not closed by RustFS.
+  bucket with success for the admin, so the client checks first (a `403` on
+  that check, a bucket of another account, is a collision too). The window
+  between that check and the create is not closed by RustFS: a create by the
+  same admin identity inside it is adopted. The operator therefore needs
+  dedicated admin credentials that no other creator shares; a create by a
+  different account gets `BucketAlreadyExists`.
 
 ### Not done yet
 

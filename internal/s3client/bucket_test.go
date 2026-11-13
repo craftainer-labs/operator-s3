@@ -3,6 +3,7 @@ package s3client
 import (
 	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -158,6 +159,12 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
 		t.Errorf("a failing existence check: %v", err)
 	}
+	// A name another account owns answers the HEAD with 403: also a collision.
+	g.statusOn["HEAD /bkt"] = http.StatusForbidden
+	if err := g.client().CreateBucket(bg, p); !errors.Is(err, ErrBucketExists) {
+		t.Errorf("a forbidden existence check: %v", err)
+	}
+	delete(g.statusOn, "HEAD /bkt")
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.
 	f := newFakeStore(t)

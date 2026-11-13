@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -129,7 +130,15 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 // BucketAlreadyExists from the create instead.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
 	exists, err := c.mc.BucketExists(ctx, p.Name)
-	if err = c.s3(ctx, "HEAD bucket", err); err != nil {
+	err = c.s3(ctx, "HEAD bucket", err)
+	var refusal *Error
+	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
+		// The admin credentials can always HEAD a bucket of their own, so a
+		// refusal means the name is taken by another account. (Observe has
+		// already shown the credentials work, or this would not be reached.)
+		return ErrBucketExists
+	}
+	if err != nil {
 		return err
 	}
 	if exists {
