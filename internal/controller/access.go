@@ -307,11 +307,14 @@ func (e *accessExternal) Update(ctx context.Context, spec s3v1alpha1.BucketAcces
 	if err := e.be.store.ApplyAccess(ctx, p, cur.User); err != nil {
 		return nil, err
 	}
+	if !cur.KeyExists { // nothing to keep, and no need to read the Secret
+		return e.issue(ctx, cur.Key)
+	}
 	held, err := e.held(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if secret := held["secretAccessKey"]; cur.KeyExists && len(secret) > 0 && string(held["accessKeyId"]) == cur.Key {
+	if secret := held["secretAccessKey"]; len(secret) > 0 && string(held["accessKeyId"]) == cur.Key {
 		return e.data(cur.Key, string(secret)), nil
 	}
 	return e.issue(ctx, cur.Key)
