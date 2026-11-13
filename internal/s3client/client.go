@@ -54,6 +54,11 @@ var (
 	// ErrBucketNotEmpty means a bucket still holds objects; the operator never
 	// deletes objects.
 	ErrBucketNotEmpty = errors.New("the bucket is not empty")
+	// ErrBucketExists means a bucket of that name exists already. RustFS answers
+	// a create of an existing bucket by its owner (the admin credentials) with
+	// 200, not 409 (create_bucket_exists_response in app/bucket_usecase.rs), so
+	// CreateBucket asks first.
+	ErrBucketExists = errors.New("the bucket exists already")
 	// ErrInvalidTag means the bucket's tags, with the ownership marker, are not
 	// valid S3 tags.
 	ErrInvalidTag = errors.New("the bucket tags are not valid")

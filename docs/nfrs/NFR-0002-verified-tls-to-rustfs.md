@@ -43,5 +43,8 @@ plaintext server all fail) in `internal/s3client`; `TestBucketLifecycleRetain`
 (`internal/controller`) checks that the store's endpoint, region, bundle
 and floor reach the client. The `fips140=only` run is the library's
 (lib-operator-go); this repository's release build follows `docs/TEMPLATE.md`.
-Signing and the admin routes against a real RustFS are checked by the
-integration lane (NO3b-2).
+Signing and the admin routes against a real RustFS, and that its certificate
+chain and host name are verified (an untrusted CA and a wrong name fail with the
+fixed category; TLS 1.3 and the name override work), are checked by the
+integration lane, `TestSigV4IsAccepted` and `TestTLSIsVerified` in
+`test/integration`.

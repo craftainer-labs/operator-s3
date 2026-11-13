@@ -118,10 +118,21 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 	return nil
 }
 
-// CreateBucket makes the bucket and applies the rest of the parameters.
+// CreateBucket makes the bucket and applies the rest of the parameters. A
+// bucket that exists already is ErrBucketExists, whoever made it: RustFS
+// answers a create by the owner of an existing bucket with success, so without
+// this check a bucket made between the caller's read and this create would be
+// taken over silently.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
-	err := c.mc.MakeBucket(ctx, p.Name, minio.MakeBucketOptions{Region: c.region, ObjectLocking: p.ObjectLock})
-	if err := c.s3(ctx, "PUT bucket", err); err != nil {
+	exists, err := c.mc.BucketExists(ctx, p.Name)
+	if err = c.s3(ctx, "HEAD bucket", err); err != nil {
+		return err
+	}
+	if exists {
+		return ErrBucketExists
+	}
+	err = c.mc.MakeBucket(ctx, p.Name, minio.MakeBucketOptions{Region: c.region, ObjectLocking: p.ObjectLock})
+	if err = c.s3(ctx, "PUT bucket", err); err != nil {
 		return err
 	}
 	return c.configure(ctx, p, BucketState{})

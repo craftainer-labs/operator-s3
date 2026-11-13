@@ -146,6 +146,18 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 			t.Errorf("create, %s: no error", failOn)
 		}
 	}
+	// A bucket that exists already is never created over: RustFS would answer
+	// the owner's create with 200.
+	g := newFakeStore(t)
+	g.bucket["bkt"] = &fakeBucket{tags: map[string]string{}}
+	g.reset()
+	if err := g.client().CreateBucket(bg, p); !errors.Is(err, ErrBucketExists) || g.asked("PUT /bkt") {
+		t.Errorf("create over an existing bucket: %v, requests %v", err, g.requests())
+	}
+	g.failOn = "HEAD /bkt"
+	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("a failing existence check: %v", err)
+	}
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.
 	f := newFakeStore(t)

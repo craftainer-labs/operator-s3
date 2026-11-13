@@ -1,0 +1,7 @@
+# This instance's own paths, in the `ignore` tier only (same format as
+# template-sync-manifest.yml): read by the completeness check, never by sync.
+ignore:
+  # The real-RustFS integration lane (NO3b-2): workflow and the scripts
+  # shared with the devcontainer stack.
+  - .github/workflows/integration.yml
+  - test/integration/

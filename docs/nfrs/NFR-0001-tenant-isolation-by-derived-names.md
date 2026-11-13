@@ -54,4 +54,6 @@ or an unmarked bucket leaves no write and no delete),
 `TestBucketWithoutAStoreOrANamespace` (`NamespaceNotAllowed`) and
 `TestAccessNeedsAUsableBucket` (`internal/controller`). Whether the claim
 reaches only its own objects on a live store, and that a policy confines a key
-to its bucket and prefix, is checked by the RustFS integration lane (NO3b-2).
+to its bucket and prefix, is checked by the RustFS integration lane in
+`test/integration`: `TestPolicyConfinesAKeyToItsBucketAndPrefix`,
+`TestDeleteAccessTakesOnlyItsOwn` and the two claim flows.

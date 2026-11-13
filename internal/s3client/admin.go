@@ -219,14 +219,12 @@ func (c *Client) DeleteAccess(ctx context.Context, user string, keys []string) e
 	return nil
 }
 
-// quota reads the hard quota of a bucket in bytes; 0 is none, and so is a 404.
+// quota reads the hard quota of a bucket in bytes; 0 is none. RustFS answers
+// 200 with "quota":0 for a bucket without a quota (the get-bucket-quota
+// handler, admin/handlers/quota.rs); a 404 is NoSuchBucket, so it is an error
+// here, not "no quota".
 func (c *Client) quota(ctx context.Context, bucket string) (int64, error) {
 	data, err := c.admin(ctx, http.MethodGet, "/get-bucket-quota", url.Values{"bucket": {bucket}}, nil)
-	if errors.Is(err, ErrNotFound) {
-		// No quota set. Whether RustFS answers 404 for that is to be confirmed
-		// against a real store (NO3b-2); a 200 with quota 0 reads the same.
-		return 0, nil
-	}
 	if err != nil {
 		return 0, err
 	}

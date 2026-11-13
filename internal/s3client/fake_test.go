@@ -20,9 +20,10 @@ import (
 
 // fakeStore is a RustFS: the admin API and the S3 bucket API over an HTTPS
 // test server, in memory. It checks the SigV4 signature of every request with
-// its own implementation of the algorithm, and records what it was asked. There is no
-// real RustFS to run against until NO3b-2, so its routes follow the admin
-// handlers of rustfs/rustfs at 1.0.0-rc.5.
+// its own implementation of the algorithm, and records what it was asked. Its
+// routes follow the admin handlers of rustfs/rustfs at 1.0.0-rc.5; the
+// integration lane (test/integration) checks the client against the real
+// server.
 type fakeStore struct {
 	t   *testing.T
 	srv *httptest.Server
