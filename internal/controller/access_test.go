@@ -299,7 +299,8 @@ func accessExt(t *testing.T, store *memStore) *accessExternal {
 	e := newAccessExternal(be, claim)
 	e.bucket = "bkt"
 	e.persist = func(context.Context) error { return nil }
-	e.held = func(context.Context) (map[string][]byte, error) { return nil, nil }
+	e.binding = func(context.Context) (*corev1.Secret, error) { return nil, nil }
+	e.drop = func(context.Context, *corev1.Secret) error { return nil }
 	return e
 }
 
@@ -461,51 +462,135 @@ func TestNewAccessExternalKeepsTheRecordedName(t *testing.T) {
 }
 
 // Update keeps the secret key of the active service account when the binding
-// Secret holds it, and issues the active key again only when nothing valid is
-// held.
+// Secret holds it. When it does not, the key is never reset: Update returns
+// ErrBindingNotUsable (and deletes a Secret of the claim that holds something
+// else) so the lifecycle rotates. Only a key that is gone is issued again.
 func TestAccessUpdateKeepsAValidKey(t *testing.T) {
 	ctx := context.Background()
 	spec := s3v1alpha1.BucketAccessSpec{Prefix: "new/"}
 	key := s3client.AccessKey("uid-1", 0)
 	live := AccessState{Key: key, KeyExists: true}
-	held := map[string][]byte{"accessKeyId": []byte(key), "secretAccessKey": []byte("held-secret")}
+	yes := true
+	secret := func(key, sk string, owned bool) *corev1.Secret {
+		s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "tenant"},
+			Data: map[string][]byte{"accessKeyId": []byte(key), "secretAccessKey": []byte(sk)}}
+		if owned {
+			s.OwnerReferences = []metav1.OwnerReference{{UID: "uid-1", Name: "app", Controller: &yes}}
+		}
+		return s
+	}
 
+	// A valid Secret: the key and its secret are kept, the fields follow the spec.
+	store := newMemStore()
+	e := accessExt(t, store)
+	e.claim.Spec = spec
+	e.binding = func(context.Context) (*corev1.Secret, error) { return secret(key, "held-secret", true), nil }
+	data, err := e.Update(ctx, spec, live)
+	if err != nil || string(data["secretAccessKey"]) != "held-secret" || string(data["prefix"]) != "new/" || string(data["accessKeyId"]) != key {
+		t.Errorf("valid: %v, %v", data, err)
+	}
+	store.wantNot(t, "IssueKey")
+
+	// No valid Secret: an error, no reset, and a Secret of the claim goes.
 	cases := map[string]struct {
-		held   map[string][]byte
-		cur    AccessState
-		issued bool
+		secret  *corev1.Secret
+		dropped bool
 	}{
-		"valid":            {held, live, false},
-		"another key":      {map[string][]byte{"accessKeyId": []byte("OTHER"), "secretAccessKey": []byte("s")}, live, true},
-		"no secret":        {map[string][]byte{"accessKeyId": []byte(key)}, live, true},
-		"no Secret at all": {nil, live, true},
-		"key gone":         {held, AccessState{Key: key}, true},
+		"missing":       {nil, false},
+		"another key":   {secret("OTHER", "s", true), true},
+		"no secret key": {secret(key, "", true), true},
+		"foreign":       {secret("OTHER", "s", false), false},
 	}
 	for name, tc := range cases {
 		store := newMemStore()
 		e := accessExt(t, store)
-		e.claim.Spec = spec
-		e.held = func(context.Context) (map[string][]byte, error) { return tc.held, nil }
-		data, err := e.Update(ctx, spec, tc.cur)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+		e.binding = func(context.Context) (*corev1.Secret, error) { return tc.secret, nil }
+		dropped := false
+		e.drop = func(context.Context, *corev1.Secret) error { dropped = true; return nil }
+		if data, err := e.Update(ctx, spec, live); !errors.Is(err, ErrBindingNotUsable) || data != nil {
+			t.Errorf("%s: %v, %v", name, data, err)
 		}
-		issued := strings.Contains(store.joined(), "IssueKey")
-		if issued != tc.issued || string(data["prefix"]) != "new/" || string(data["accessKeyId"]) != key {
-			t.Errorf("%s: issued = %t, data = %v", name, issued, data)
+		if dropped != tc.dropped {
+			t.Errorf("%s: dropped = %t", name, dropped)
 		}
-		if !tc.issued && string(data["secretAccessKey"]) != "held-secret" {
-			t.Errorf("%s: the held secret key was replaced", name)
-		}
-		if tc.issued && string(data["secretAccessKey"]) == "held-secret" {
-			t.Errorf("%s: the key was not issued again", name)
-		}
+		store.want(t, "ApplyAccess")
+		store.wantNot(t, "IssueKey")
 	}
 
-	e := accessExt(t, newMemStore())
-	e.held = func(context.Context) (map[string][]byte, error) { return nil, errStore }
+	// The key itself is gone: nothing to reset, so it is issued again, and the
+	// Secret is not even read.
+	store = newMemStore()
+	e = accessExt(t, store)
+	e.binding = func(context.Context) (*corev1.Secret, error) { t.Error("the Secret was read"); return nil, nil }
+	data, err = e.Update(ctx, spec, AccessState{Key: key})
+	if err != nil || string(data["accessKeyId"]) != key {
+		t.Errorf("key gone: %v, %v", data, err)
+	}
+	store.want(t, "IssueKey")
+
+	// Failures reading or deleting the Secret are errors.
+	e = accessExt(t, newMemStore())
+	e.binding = func(context.Context) (*corev1.Secret, error) { return nil, errStore }
 	if _, err := e.Update(ctx, spec, live); !errors.Is(err, errStore) {
-		t.Errorf("a failed read of the Secret: %v", err)
+		t.Errorf("read: %v", err)
+	}
+	e.binding = func(context.Context) (*corev1.Secret, error) { return secret("OTHER", "s", true), nil }
+	e.drop = func(context.Context, *corev1.Secret) error { return errStore }
+	if _, err := e.Update(ctx, spec, live); !errors.Is(err, errStore) {
+		t.Errorf("drop: %v", err)
+	}
+}
+
+// A policy change while the binding Secret holds no valid key does not reset
+// the key: the policy is applied, the update reports it, and the next
+// reconcile rotates to the next sequence.
+func TestAccessPolicyChangeWithoutAValidSecretRotates(t *testing.T) {
+	ctx := context.Background()
+	tamper := map[string]func(h *harness, a *s3v1alpha1.BucketAccess){
+		"missing Secret": func(h *harness, a *s3v1alpha1.BucketAccess) {
+			var s corev1.Secret
+			h.must(env.Client.Get(ctx, client.ObjectKey{Namespace: h.ns, Name: a.GetBindingSecretName()}, &s))
+			h.must(env.Client.Delete(ctx, &s))
+		},
+		"another key in the Secret": func(h *harness, a *s3v1alpha1.BucketAccess) {
+			var s corev1.Secret
+			h.must(env.Client.Get(ctx, client.ObjectKey{Namespace: h.ns, Name: a.GetBindingSecretName()}, &s))
+			s.Data["accessKeyId"] = []byte("TAMPERED")
+			h.must(env.Client.Update(ctx, &s))
+		},
+	}
+	for name, mutate := range tamper {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, common.DeletionRetain, nil)
+			br, ar := &BucketReconciler{h.cfg}, &AccessReconciler{h.cfg}
+			h.reconcileOK(br, h.bucket("uploads", nil))
+			a := h.access("app", "uploads", nil)
+			h.reconcileOK(ar, a)
+			h.get(a)
+			user := s3client.UserName(h.ns, "app")
+			key0, key1 := s3client.AccessKey(string(a.UID), 0), s3client.AccessKey(string(a.UID), 1)
+
+			mutate(h, a)
+			h.patch(a, func() { a.Spec.Access = s3v1alpha1.AccessReadOnly })
+			h.fake.reset()
+			if err := h.reconcile(ar, a); !errors.Is(err, ErrBindingNotUsable) {
+				t.Fatalf("update: %v", err)
+			}
+			h.fake.want(t, "ApplyAccess "+user)
+			h.fake.wantNot(t, "IssueKey")
+
+			h.fake.reset()
+			h.reconcileOK(ar, a)
+			h.fake.want(t, "IssueKey "+user+" "+key1)
+			h.fake.wantNot(t, "IssueKey "+user+" "+key0)
+			if got := bindingSecret(h, a); got["accessKeyId"] != key1 || got["secretAccessKey"] == "" {
+				t.Errorf("binding after the rotation = %v", got)
+			}
+			h.get(a)
+			if a.Status.Rotation == nil || a.Status.Rotation.Sequence != 1 {
+				t.Errorf("rotation = %+v", a.Status.Rotation)
+			}
+		})
 	}
 }
 

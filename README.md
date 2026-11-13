@@ -56,8 +56,14 @@ finalizers, `deletionPolicy`, `managementPolicies`, drift polling, the
   Secret (type `servicebinding.io/s3`) holds the service account's keys.
   Rotation issues the next service account first and deletes the previous one
   after `gracePeriod`. A change of `access` or `prefix` updates the policy and
-  the Secret's fields but keeps the key in use; its secret key is set again only
-  when the Secret holds no valid one. The access waits (and is reconciled again
+  the Secret's fields but keeps the key in use, and a key in use is never reset
+  in place. If the binding Secret does not hold it (missing, or holding another
+  key), the update applies the policy and reports "the binding Secret does not
+  hold the active key"; the next reconcile then rotates to a new key with a
+  grace period. A key that is gone from the store is issued again. The operator
+  cannot ask the store for a secret key, so a hand-edited `secretAccessKey` that
+  keeps the right `accessKeyId` is written back as it is; annotate the claim with
+  `craftainer.dev/rotate` (a new value) to force a rotation and repair it. The access waits (and is reconciled again
   when the `Bucket` changes) until its `Bucket` is `Ready` and not being
   deleted. Deleting it removes the service accounts it derived (never another
   account under the user's name), the user, and the policies it named, even

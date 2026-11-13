@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,6 +31,10 @@ var (
 	// ErrBucketNotUsable means the Bucket a BucketAccess names is missing, has
 	// no bucket yet or lives on another store.
 	ErrBucketNotUsable = errors.New("the referenced Bucket cannot be used")
+	// ErrBindingNotUsable means the binding Secret does not hold the secret key
+	// of the active service account, so the access cannot be updated in place;
+	// the next reconcile rotates it.
+	ErrBindingNotUsable = errors.New("the binding Secret does not hold the active key; the next reconcile rotates it")
 	// ErrInvalidPrefix means an access prefix holds a wildcard or a policy
 	// variable, which would widen the policy built from it.
 	ErrInvalidPrefix = errors.New("prefix must not contain *, ? or $")
@@ -70,7 +75,10 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			x.pre = berr
 		}
 		x.persist = func(ctx context.Context) error { return r.Client.Status().Update(ctx, &a) }
-		x.held = func(ctx context.Context) (map[string][]byte, error) { return r.heldSecret(ctx, &a) }
+		x.binding = func(ctx context.Context) (*corev1.Secret, error) { return r.bindingSecret(ctx, &a) }
+		x.drop = func(ctx context.Context, s *corev1.Secret) error {
+			return client.IgnoreNotFound(r.Client.Delete(ctx, s, client.Preconditions{UID: &s.UID}))
+		}
 		ext = x
 	}
 	return lifecycle.Reconcile(ctx, r.Client, &a, a.Spec, ext, opts)
@@ -105,13 +113,16 @@ func (r *AccessReconciler) checkBucket(ctx context.Context, a *s3v1alpha1.Bucket
 	return b.GetExternalName(), nil
 }
 
-// heldSecret is the data of the claim's binding Secret; a Secret that is not
-// there holds nothing. It reads through the API reader, because the cache only
-// holds Secrets with the operator's label.
-func (r *AccessReconciler) heldSecret(ctx context.Context, a *s3v1alpha1.BucketAccess) (map[string][]byte, error) {
+// bindingSecret is the claim's binding Secret, nil when there is none. It reads
+// through the API reader, because the cache only holds Secrets with the
+// operator's label.
+func (r *AccessReconciler) bindingSecret(ctx context.Context, a *s3v1alpha1.BucketAccess) (*corev1.Secret, error) {
 	var s corev1.Secret
 	err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: a.GetBindingSecretName()}, &s)
-	return s.Data, client.IgnoreNotFound(err)
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	return &s, err
 }
 
 // bucketRefIndex indexes BucketAccesses by the name of the Bucket they use.
@@ -170,8 +181,10 @@ type accessExternal struct {
 	// persist writes the claim's status now, instead of at the end of the
 	// reconcile.
 	persist func(context.Context) error
-	// held reads the data of the binding Secret as it is now.
-	held func(context.Context) (map[string][]byte, error)
+	// binding reads the binding Secret as it is now; nil when there is none.
+	binding func(context.Context) (*corev1.Secret, error)
+	// drop deletes a binding Secret.
+	drop func(context.Context, *corev1.Secret) error
 }
 
 func newAccessExternal(be *backend, claim *s3v1alpha1.BucketAccess) *accessExternal {
@@ -296,9 +309,14 @@ func (e *accessExternal) Create(ctx context.Context, spec s3v1alpha1.BucketAcces
 // Update implements lifecycle.External: the user and its policy follow the
 // spec. The active service account keeps its secret key, so a change of policy
 // does not invalidate the credentials in use; the binding Secret is returned
-// as it is, with the fields that follow the spec. Only when no valid secret key
-// is held (the Secret does not hold the active key, or the key itself is gone
-// from the store) is the active key issued again: nothing that works is lost.
+// as it is, with the fields that follow the spec.
+//
+// A key in use is never reset in place. When the binding Secret does not hold
+// it (it is missing, or holds another key or no secret), Update has applied the
+// policy and returns ErrBindingNotUsable, after deleting a Secret of this claim
+// that holds something else: the next reconcile finds the Secret missing and
+// the lifecycle rotates (next sequence, grace period). A key that is gone from
+// the store has nothing to reset, so it is issued again.
 func (e *accessExternal) Update(ctx context.Context, spec s3v1alpha1.BucketAccessSpec, cur AccessState) (binding.Data, error) {
 	p, err := e.params(spec)
 	if err != nil {
@@ -307,17 +325,22 @@ func (e *accessExternal) Update(ctx context.Context, spec s3v1alpha1.BucketAcces
 	if err := e.be.store.ApplyAccess(ctx, p, cur.User); err != nil {
 		return nil, err
 	}
-	if !cur.KeyExists { // nothing to keep, and no need to read the Secret
+	if !cur.KeyExists {
 		return e.issue(ctx, cur.Key)
 	}
-	held, err := e.held(ctx)
+	s, err := e.binding(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if secret := held["secretAccessKey"]; len(secret) > 0 && string(held["accessKeyId"]) == cur.Key {
-		return e.data(cur.Key, string(secret)), nil
+	if s != nil && len(s.Data["secretAccessKey"]) > 0 && string(s.Data["accessKeyId"]) == cur.Key {
+		return e.data(cur.Key, string(s.Data["secretAccessKey"])), nil
 	}
-	return e.issue(ctx, cur.Key)
+	if s != nil && metav1.IsControlledBy(s, e.claim) {
+		if err := e.drop(ctx, s); err != nil {
+			return nil, err
+		}
+	}
+	return nil, ErrBindingNotUsable
 }
 
 // Delete implements lifecycle.External: every generation goes with the claim.
