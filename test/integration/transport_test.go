@@ -98,15 +98,16 @@ func TestServerVersion(t *testing.T) {
 
 	// A wrong secret and an unknown access key: the store refuses, and the
 	// error is an authentication failure that holds neither key nor host.
+	wrongSecret, unknownAccess := newSecret(), unique("it-unknown")
 	for what, mutate := range map[string]func(*s3client.Target){
-		"wrong secret":   func(tg *s3client.Target) { tg.SecretKey = "wrong-secret-0123456789" },
-		"unknown access": func(tg *s3client.Target) { tg.AccessKey = "unknown-access-key" },
+		"wrong secret":   func(tg *s3client.Target) { tg.SecretKey = wrongSecret },
+		"unknown access": func(tg *s3client.Target) { tg.AccessKey = unknownAccess },
 	} {
 		_, err := sv.client(t, mutate).ServerVersion(bg)
 		if !errors.Is(err, lifecycle.ErrUnreachable) || !errors.Is(err, s3client.ErrConnAuth) {
 			t.Fatalf("%s: %v, want an authentication failure", what, err)
 		}
-		for _, secret := range []string{"wrong-secret-0123456789", "unknown-access-key", sv.access, sv.secret, sv.host} {
+		for _, secret := range []string{wrongSecret, unknownAccess, sv.access, sv.secret, sv.host} {
 			if strings.Contains(err.Error(), secret) {
 				t.Errorf("%s: the error leaks %q: %v", what, secret, err)
 			}
