@@ -164,6 +164,12 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 	if err := g.client().CreateBucket(bg, p); !errors.Is(err, ErrBucketExists) {
 		t.Errorf("a forbidden existence check: %v", err)
 	}
+	// Unless the admin credentials themselves are refused.
+	g.statusOn["list-canned-policies"] = http.StatusForbidden
+	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("a forbidden existence check with refused credentials: %v", err)
+	}
+	delete(g.statusOn, "list-canned-policies")
 	delete(g.statusOn, "HEAD /bkt")
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.

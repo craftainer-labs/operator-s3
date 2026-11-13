@@ -133,9 +133,12 @@ func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
 	err = c.s3(ctx, "HEAD bucket", err)
 	var refusal *Error
 	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
-		// The admin credentials can always HEAD a bucket of their own, so a
-		// refusal means the name is taken by another account. (Observe has
-		// already shown the credentials work, or this would not be reached.)
+		// A refused HEAD is a bucket of another account, unless the admin
+		// credentials themselves are refused: an admin call tells the two
+		// apart, and a failure of it is the answer.
+		if _, probe := c.admin(ctx, http.MethodGet, "/list-canned-policies", nil, nil); probe != nil {
+			return probe
+		}
 		return ErrBucketExists
 	}
 	if err != nil {

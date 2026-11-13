@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -216,14 +217,19 @@ var (
 	ready   bool
 )
 
+// notReady is what the first wait gave up with.
+var notReady string
+
 func (s server) waitReady(t *testing.T) {
 	t.Helper()
 	readyMu.Lock()
 	defer readyMu.Unlock()
-	// Only a success is remembered: a test that gives up leaves the wait to the
-	// next one.
+	// Both outcomes are remembered, so a dead server costs one wait.
 	if ready {
 		return
+	}
+	if notReady != "" {
+		t.Fatal(notReady)
 	}
 	func() {
 		deadline := time.Now().Add(2 * time.Minute)
@@ -234,7 +240,8 @@ func (s server) waitReady(t *testing.T) {
 				return
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server is not ready: HTTP %d, %v: %s", status, err, body)
+				notReady = fmt.Sprintf("the server is not ready: HTTP %d, %v: %s", status, err, body)
+				t.Fatal(notReady)
 			}
 			time.Sleep(time.Second)
 		}
