@@ -22,14 +22,14 @@ func TestServerVersion(t *testing.T) {
 
 	// No "@": the whole text is the version. The first server that names one
 	// wins.
-	for body, want := range map[string]string{
-		`{"info":{"servers":[{"version":" 1.2.3 "}]}}`:                      "1.2.3",
-		`{"info":{"servers":[{"version":""},{"version":"d@v2"}]}}`:          "v2",
-		`{"info":{"servers":[{"version":"d@"},{"version":"1.0.0-rc.4"}]}}`: "1.0.0-rc.4",
+	for _, tc := range []struct{ body, want string }{
+		{`{"info":{"servers":[{"version":" 1.2.3 "}]}}`, "1.2.3"},
+		{`{"info":{"servers":[{"version":""},{"version":"d@v2"}]}}`, "v2"},
+		{`{"info":{"servers":[{"version":"d@"},{"version":"1.0.0-rc.4"}]}}`, "1.0.0-rc.4"},
 	} {
-		f.setBody("GET /rustfs/admin/v3/info", body)
-		if got, err := c.ServerVersion(bg); err != nil || got != want {
-			t.Errorf("%s: %q, %v, want %q", body, got, err, want)
+		f.setBody("GET /rustfs/admin/v3/info", tc.body)
+		if got, err := c.ServerVersion(bg); err != nil || got != tc.want {
+			t.Errorf("%s: %q, %v, want %q", tc.body, got, err, tc.want)
 		}
 	}
 }
