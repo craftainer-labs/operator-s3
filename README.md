@@ -253,8 +253,9 @@ policies and service accounts it derived, and never the bucket) decides what
 deleting a claim does to the data:
 
 - `Retain` (the default; `DEFAULT_DATA_DELETION_POLICY` sets it for a claim that
-  leaves it unset, pinned in `status.effectiveDeletionPolicy`): the bucket and
-  its objects stay on the store, the finalizer is released. A later claim of the
+  leaves it unset, pinned in `status.effectiveDeletionPolicy`; a `spec.deletionPolicy`
+  set later wins at deletion): the bucket and its objects stay on the store, the
+  finalizer is released. A later claim of the
   same name needs the marker handed over (above).
 - `Delete`: the bucket is deleted if it is empty. The operator never deletes
   objects, so a bucket that still holds objects (or versions or delete markers)

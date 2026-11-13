@@ -44,6 +44,8 @@ spec:
       cleanup:
         - script:
             content: helm uninstall operator-s3 --namespace "$NAMESPACE" --ignore-not-found
+        - script:
+            content: rm -f "${TMPDIR:-/tmp}"/e2e-*-"$NAMESPACE"
 
     - name: runs as an arbitrary UID, restricted, with leader election
       try:
