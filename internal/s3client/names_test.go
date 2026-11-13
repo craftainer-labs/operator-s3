@@ -66,7 +66,8 @@ func TestAccessPolicy(t *testing.T) {
 		t.Errorf("whole-bucket policy: %s", whole)
 	}
 	// The name follows the document.
-	if PolicyName("u", []byte(rw)) == PolicyName("u", []byte(ro)) || PolicyName("u", []byte(rw)) != PolicyName("u", []byte(rw)) {
+	again := PolicyName("u", []byte(rw))
+	if PolicyName("u", []byte(rw)) == PolicyName("u", []byte(ro)) || again != PolicyName("u", []byte(rw)) {
 		t.Error("policy names")
 	}
 	if !OwnsPolicy("u", PolicyName("u", []byte(rw))) || OwnsPolicy("u", "readwrite") || OwnsPolicy("u", PolicyName("v", []byte(rw))) {

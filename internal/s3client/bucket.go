@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -111,7 +112,7 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 		if prefix == "" {
 			prefix = r.Prefix
 		}
-		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: int32(r.Expiration.Days), Disabled: r.Status != "Enabled"})
+		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: clampDays(r.Expiration.Days), Disabled: r.Status != "Enabled"})
 	}
 	st.Rules = sortedRules(st.Rules)
 	return nil
@@ -195,4 +196,16 @@ func (c *Client) DeleteBucket(ctx context.Context, name string) error {
 		return ErrBucketNotEmpty
 	}
 	return ignoreNotFound(err)
+}
+
+// clampDays narrows a lifecycle day count to int32, saturating instead of
+// wrapping.
+func clampDays(d int) int32 {
+	if d > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if d < 0 {
+		return 0
+	}
+	return int32(d)
 }

@@ -266,10 +266,10 @@ func TestTransportFailuresAreCategorised(t *testing.T) {
 }
 
 func TestClassify(t *testing.T) {
-	if classify(errors.New("tls: handshake failure")) != ErrConnTLS || classify(errors.New("x509: certificate expired")) != ErrConnTLS {
+	if !errors.Is(classify(errors.New("tls: handshake failure")), ErrConnTLS) || !errors.Is(classify(errors.New("x509: certificate expired")), ErrConnTLS) {
 		t.Error("TLS texts")
 	}
-	if classify(errors.New("lookup tls-host.example.test: no such host")) != ErrConnFailed {
+	if !errors.Is(classify(errors.New("lookup tls-host.example.test: no such host")), ErrConnFailed) {
 		t.Error("a host name containing tls is not a TLS failure")
 	}
 }

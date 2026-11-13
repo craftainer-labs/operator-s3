@@ -241,30 +241,23 @@ func TestAccessReconcileOfMissingClaimAndDownStore(t *testing.T) {
 	}
 }
 
-// A prefix with a wildcard or a policy variable would widen the policy; it is
-// refused, and deleting the access is still possible.
+// A prefix with a wildcard or a policy variable would widen the policy. The
+// CRD rule already keeps such a prefix out of the API server, so this checks
+// the controller's own guard (defence in depth) directly.
 func TestAccessRefusesAWideningPrefix(t *testing.T) {
-	h := newHarness(t, common.DeletionRetain, nil)
-	br, ar := &BucketReconciler{h.cfg}, &AccessReconciler{h.cfg}
-	h.reconcileOK(br, h.bucket("uploads", nil))
-	a := h.access("wide", "uploads", func(a *s3v1alpha1.BucketAccess) { a.Spec.Prefix = "*" })
-	if err := h.reconcile(ar, a); !errors.Is(err, ErrInvalidPrefix) {
-		t.Errorf("create: %v", err)
+	e := accessExt(t, newMemStore())
+	for _, prefix := range []string{"*", "a?b", "${aws:username}/"} {
+		spec := s3v1alpha1.BucketAccessSpec{Prefix: prefix}
+		if _, _, err := e.policy(spec); !errors.Is(err, ErrInvalidPrefix) {
+			t.Errorf("policy %q: %v", prefix, err)
+		}
+		if _, err := e.params(spec); !errors.Is(err, ErrInvalidPrefix) {
+			t.Errorf("params %q: %v", prefix, err)
+		}
 	}
-	h.fake.wantNot(t, "ApplyAccess")
-
-	ok := h.access("ok", "uploads", nil)
-	h.reconcileOK(ar, ok)
-	h.patch(ok, func() { ok.Spec.Prefix = "${aws:username}/" })
-	if err := h.reconcile(ar, ok); !errors.Is(err, ErrInvalidPrefix) {
-		t.Errorf("update: %v", err)
+	if _, _, err := e.policy(s3v1alpha1.BucketAccessSpec{Prefix: "team/a/"}); err != nil {
+		t.Errorf("a plain prefix: %v", err)
 	}
-	h.must(env.Client.Delete(context.Background(), ok))
-	h.reconcileOK(ar, ok)
-	if !h.gone(ok) {
-		t.Error("an access with an invalid prefix cannot be deleted")
-	}
-	h.fake.want(t, "DeleteAccess")
 }
 
 func accessExt(t *testing.T, store *memStore) *accessExternal {

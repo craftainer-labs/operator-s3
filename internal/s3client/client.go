@@ -101,14 +101,17 @@ func (e *Error) Error() string {
 }
 
 // Is makes errors.Is(err, ErrNotFound) true for a 404.
-func (e *Error) Is(target error) bool { return target == ErrNotFound && e.Status == http.StatusNotFound }
+func (e *Error) Is(target error) bool {
+	return target == ErrNotFound && e.Status == http.StatusNotFound
+}
 
 // tlsText reports whether the text of a connection error is one of
-// crypto/tls's failures ("tls: ...", "x509: ..."), not just a host name that
-// contains "tls".
+// crypto/tls's failures ("tls: ...", "x509: ..."), or net/http's wording for
+// a plain-HTTP answer to a TLS client, not just a host name that contains "tls".
 func tlsText(msg string) bool {
 	msg = strings.ToLower(msg)
-	return strings.Contains(msg, "tls: ") || strings.Contains(msg, "x509: ")
+	return strings.Contains(msg, "tls: ") || strings.Contains(msg, "x509: ") ||
+		strings.Contains(msg, "server gave http response to https client")
 }
 
 // classify maps a transport failure to its category.

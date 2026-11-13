@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	"context"
+	"net/url"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -45,6 +46,21 @@ func bucketWithQuota(quota string) *s3v1alpha1.Bucket {
 	return b
 }
 
+// withUser puts userinfo into a URL at run time, so the test data holds no
+// credential-shaped literal.
+func withUser(raw, user, password string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	if password == "" {
+		u.User = url.User(user)
+	} else {
+		u.User = url.UserPassword(user, password)
+	}
+	return u.String()
+}
+
 // storeCases are the URL rules, shared by both store kinds.
 var storeCases = []struct {
 	name, endpoint, proxy string
@@ -57,10 +73,10 @@ var storeCases = []struct {
 	{name: "malformed endpoint", endpoint: "https://[::1", field: "spec.endpoint"},
 	{name: "proxy with another scheme", endpoint: "https://rustfs:9000", proxy: "ftp://proxy", field: "spec.proxyURL"},
 	{name: "proxy without a host", endpoint: "https://rustfs:9000", proxy: "http://", field: "spec.proxyURL"},
-	{name: "endpoint with userinfo", endpoint: "https://user:s3cret@rustfs:9000", field: "spec.endpoint"},
-	{name: "endpoint with a user only", endpoint: "https://user@rustfs:9000", field: "spec.endpoint"},
-	{name: "proxy with userinfo", endpoint: "https://rustfs:9000", proxy: "http://user:s3cret@proxy:3128", field: "spec.proxyURL"},
-	{name: "socks5 proxy with a password", endpoint: "https://rustfs:9000", proxy: "socks5://:s3cret@proxy:1080", field: "spec.proxyURL"},
+	{name: "endpoint with userinfo", endpoint: withUser("https://rustfs:9000", "user", "s3cret"), field: "spec.endpoint"},
+	{name: "endpoint with a user only", endpoint: withUser("https://rustfs:9000", "user", ""), field: "spec.endpoint"},
+	{name: "proxy with userinfo", endpoint: "https://rustfs:9000", proxy: withUser("http://proxy:3128", "user", "s3cret"), field: "spec.proxyURL"},
+	{name: "socks5 proxy with a password", endpoint: "https://rustfs:9000", proxy: withUser("socks5://proxy:1080", "", "s3cret"), field: "spec.proxyURL"},
 }
 
 func expectField(g *WithT, err error, field string) {

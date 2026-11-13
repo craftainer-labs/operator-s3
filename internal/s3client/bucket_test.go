@@ -2,6 +2,7 @@ package s3client
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -169,5 +170,15 @@ func TestInvalidTagsAreRefused(t *testing.T) {
 	err := f.client().putTags(bg, BucketParams{Name: "bkt", Marker: strings.Repeat("x", 300)}, nil)
 	if !errors.Is(err, ErrInvalidTag) || len(f.requests()) != 0 {
 		t.Errorf("err = %v, requests = %v", err, f.requests())
+	}
+}
+
+func TestClampDays(t *testing.T) {
+	big := math.MaxInt32
+	big++
+	for in, want := range map[int]int32{-1: 0, 0: 0, 30: 30, math.MaxInt32: math.MaxInt32, big: math.MaxInt32} {
+		if got := clampDays(in); got != want {
+			t.Errorf("clampDays(%d) = %d, want %d", in, got, want)
+		}
 	}
 }
