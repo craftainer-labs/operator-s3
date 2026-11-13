@@ -112,7 +112,7 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 		if prefix == "" {
 			prefix = r.Prefix
 		}
-		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: clampDays(r.Expiration.Days), Disabled: r.Status != "Enabled"})
+		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: clampDays(int(r.Expiration.Days)), Disabled: r.Status != "Enabled"})
 	}
 	st.Rules = sortedRules(st.Rules)
 	return nil
