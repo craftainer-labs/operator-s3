@@ -140,12 +140,16 @@ func TestBucketIntentFirstAdoption(t *testing.T) {
 	h.fake.wantNot(t, "CreateBucket", "UpdateBucket", "DeleteBucket")
 
 	// Deleting the claim does not delete the bucket, although the policy is
-	// Delete: the finalizer stays.
+	// Delete: the claim never issued a create, so it is released without the
+	// store being contacted.
 	h.must(env.Client.Delete(context.Background(), b))
+	h.fake.reset()
 	h.reconcileOK(r, b)
-	h.fake.wantNot(t, "DeleteBucket")
-	if h.gone(b) {
-		t.Error("the finalizer was dropped over a bucket that is not ours")
+	if h.fake.joined() != "" {
+		t.Errorf("the store was contacted:\n%s", h.fake.joined())
+	}
+	if !h.gone(b) {
+		t.Error("the finalizer was kept over a bucket that is not ours")
 	}
 
 	// A claim whose status recorded the create but whose bucket has no marker
@@ -278,19 +282,104 @@ func TestBucketOnAnUnreachableStore(t *testing.T) {
 	if !strings.Contains(msg, "connection failed") || strings.Contains(msg, "rustfs.example.test") {
 		t.Errorf("message = %q", msg)
 	}
+	// The claim never issued a create, so deleting it needs no store.
 	h.must(env.Client.Delete(context.Background(), b))
-	if err := h.reconcile(r, b); err == nil {
-		t.Error("the delete went through an unreachable store")
-	}
-	if h.gone(b) {
-		t.Error("the finalizer was dropped")
-	}
-
-	// Back up: the claim is created and deleted.
-	delete(h.fake.fail, "Bucket")
+	h.fake.reset()
 	h.reconcileOK(r, b)
 	if !h.gone(b) {
 		t.Error("the claim is still there")
+	}
+	if h.fake.joined() != "" {
+		t.Errorf("the store was contacted:\n%s", h.fake.joined())
+	}
+
+	// A claim that issued a create does need it: the finalizer stays until the
+	// store is back.
+	delete(h.fake.fail, "Bucket")
+	b2 := h.bucket("down-after-create", nil)
+	h.reconcileOK(r, b2)
+	h.fake.fail["Bucket"] = fmt.Errorf("%w: connection failed", lifecycle.ErrUnreachable)
+	h.must(env.Client.Delete(context.Background(), b2))
+	if err := h.reconcile(r, b2); err == nil {
+		t.Error("the delete went through an unreachable store")
+	}
+	if h.gone(b2) {
+		t.Error("the finalizer was dropped")
+	}
+	delete(h.fake.fail, "Bucket")
+	h.reconcileOK(r, b2)
+	if !h.gone(b2) {
+		t.Error("the claim is still there")
+	}
+}
+
+// A bucket that is not the claim's is skipped when the claim is deleted, and
+// the finalizer is released, whatever the policy: a bucket with another claim's
+// marker, and a bucket of another account. (An unmarked bucket of a claim that
+// never issued a create is covered by the intent-first test.)
+func TestBucketDeleteSkipsForeignBuckets(t *testing.T) {
+	h := newHarness(t, common.DeletionDelete, nil)
+	r := &BucketReconciler{h.cfg}
+	for name, foreign := range map[string]func(string){
+		"other-marker": func(n string) {
+			h.fake.buckets[n] = s3client.BucketState{Exists: true, Tags: map[string]string{s3client.MarkerTag: "other/bucket/uid"}}
+		},
+		"other-account": func(string) { h.fake.fail["Bucket"] = fmt.Errorf("%w: refused", s3client.ErrBucketExists) },
+	} {
+		b := h.bucket(name, nil)
+		h.reconcileOK(r, b) // created: the claim issued a create
+		h.get(b)
+		if b.Status.ExternalID != createIssued {
+			t.Fatalf("%s: externalId = %q", name, b.Status.ExternalID)
+		}
+		foreign(s3client.BucketName(h.ns, name))
+		h.fake.reset()
+		h.must(env.Client.Delete(context.Background(), b))
+		h.reconcileOK(r, b)
+		h.fake.wantNot(t, "DeleteBucket", "UpdateBucket", "CreateBucket")
+		if !h.gone(b) {
+			t.Errorf("%s: the finalizer was kept over a bucket that is not ours", name)
+		}
+		delete(h.fake.fail, "Bucket")
+	}
+}
+
+// A claim whose status predates the create record, with a bucket that carries
+// its marker, is given the record, so that deleting it removes the bucket.
+func TestBucketRecordsTheCreateOfAnOlderStatus(t *testing.T) {
+	h := newHarness(t, common.DeletionDelete, nil)
+	r := &BucketReconciler{h.cfg}
+	b := h.bucket("older", nil)
+	h.reconcileOK(r, b)
+	h.get(b)
+	b.Status.ExternalID = ""
+	h.must(env.Client.Status().Update(context.Background(), b))
+	h.reconcileOK(r, b)
+	h.get(b)
+	if b.Status.ExternalID != createIssued {
+		t.Errorf("externalId = %q, want the record", b.Status.ExternalID)
+	}
+	h.fake.reset()
+	h.must(env.Client.Delete(context.Background(), b))
+	h.reconcileOK(r, b)
+	h.fake.want(t, "DeleteBucket "+s3client.BucketName(h.ns, "older"))
+}
+
+// The External of a claim that never issued a create does nothing.
+func TestNothingMade(t *testing.T) {
+	ctx := context.Background()
+	n := nothingMade[s3v1alpha1.BucketSpec, s3client.BucketState]{}
+	if obs, err := n.Observe(ctx, s3v1alpha1.BucketSpec{}); err != nil || obs.Exists {
+		t.Errorf("observe: %+v, %v", obs, err)
+	}
+	if d, err := n.Create(ctx, s3v1alpha1.BucketSpec{}); d != nil || err != nil {
+		t.Errorf("create: %v, %v", d, err)
+	}
+	if d, err := n.Update(ctx, s3v1alpha1.BucketSpec{}, s3client.BucketState{}); d != nil || err != nil {
+		t.Errorf("update: %v, %v", d, err)
+	}
+	if err := n.Delete(ctx, s3client.BucketState{}); err != nil {
+		t.Errorf("delete: %v", err)
 	}
 }
 

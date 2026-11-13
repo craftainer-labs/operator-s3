@@ -57,11 +57,15 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Client.Get(ctx, req.NamespacedName, &a); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	be, err := r.backend(ctx, a.Namespace, a.Spec.ServerRef)
-	opts := lifecycle.Options{
-		Class: lifecycle.ClassCredential, BindingType: binding.TypeS3, Provider: binding.DefaultProvider,
-		ManagedBy: r.ManagedBy, Recorder: r.Recorder, APIReader: r.APIReader, ResolveErr: err, Now: r.Now,
+	// A claim that is being deleted and never issued a create has nothing on the
+	// store (an IAM user of its name, if there is one, is not its own): it is
+	// released without contacting the store, which may be gone.
+	if !a.DeletionTimestamp.IsZero() && a.GetExternalID() == "" {
+		return lifecycle.Reconcile[s3v1alpha1.BucketAccessSpec, AccessState](ctx, r.Client, &a, a.Spec,
+			nothingMade[s3v1alpha1.BucketAccessSpec, AccessState]{}, r.options(nil))
 	}
+	be, err := r.backend(ctx, a.Namespace, a.Spec.ServerRef)
+	opts := r.options(err)
 	var ext lifecycle.External[s3v1alpha1.BucketAccessSpec, AccessState]
 	if err == nil {
 		opts.ServerHost = be.host
@@ -82,6 +86,15 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		ext = x
 	}
 	return lifecycle.Reconcile(ctx, r.Client, &a, a.Spec, ext, opts)
+}
+
+// options are the lifecycle options of the controller; resolveErr is the error
+// of resolving the store, or nil.
+func (r *AccessReconciler) options(resolveErr error) lifecycle.Options {
+	return lifecycle.Options{
+		Class: lifecycle.ClassCredential, BindingType: binding.TypeS3, Provider: binding.DefaultProvider,
+		ManagedBy: r.ManagedBy, Recorder: r.Recorder, APIReader: r.APIReader, ResolveErr: resolveErr, Now: r.Now,
+	}
 }
 
 // checkBucket makes sure the Bucket exists in the claim's namespace on the same

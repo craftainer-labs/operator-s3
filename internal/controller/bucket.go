@@ -40,11 +40,14 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.Client.Get(ctx, req.NamespacedName, &b); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	be, err := r.backend(ctx, b.Namespace, b.Spec.ServerRef)
-	opts := lifecycle.Options{
-		Class: lifecycle.ClassData, ManagedBy: r.ManagedBy, Recorder: r.Recorder, APIReader: r.APIReader,
-		DefaultDeletionPolicy: r.DefaultDeletionPolicy, ResolveErr: err, Now: r.Now,
+	// A claim that is being deleted and never issued a create has nothing on the
+	// store: it is released without contacting the store, which may be gone.
+	if !b.DeletionTimestamp.IsZero() && b.GetExternalID() == "" {
+		return lifecycle.Reconcile[s3v1alpha1.BucketSpec, s3client.BucketState](ctx, r.Client, &b, b.Spec,
+			nothingMade[s3v1alpha1.BucketSpec, s3client.BucketState]{}, r.options(nil))
 	}
+	be, err := r.backend(ctx, b.Namespace, b.Spec.ServerRef)
+	opts := r.options(err)
 	var ext lifecycle.External[s3v1alpha1.BucketSpec, s3client.BucketState]
 	if err == nil {
 		opts.ServerHost = be.host
@@ -53,6 +56,15 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		ext = x
 	}
 	return lifecycle.Reconcile(ctx, r.Client, &b, b.Spec, ext, opts)
+}
+
+// options are the lifecycle options of the controller; resolveErr is the error
+// of resolving the store, or nil.
+func (r *BucketReconciler) options(resolveErr error) lifecycle.Options {
+	return lifecycle.Options{
+		Class: lifecycle.ClassData, ManagedBy: r.ManagedBy, Recorder: r.Recorder, APIReader: r.APIReader,
+		DefaultDeletionPolicy: r.DefaultDeletionPolicy, ResolveErr: resolveErr, Now: r.Now,
+	}
 }
 
 // SetupWithManager registers the controller.
@@ -110,6 +122,10 @@ func (e *bucketExternal) params(spec s3v1alpha1.BucketSpec) (s3client.BucketPara
 // claim is refused. One with no marker is taken over by Update only when the
 // claim's status records that it issued the create (a Create that stopped
 // before it stamped the marker); otherwise it is refused as unmanaged.
+//
+// While the claim is being deleted a bucket that is not its own is not refused
+// but left out (it does not exist as far as the claim is concerned), so the
+// claim is released and the bucket is never touched.
 func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec) (lifecycle.Observation[s3client.BucketState], error) {
 	none := lifecycle.Observation[s3client.BucketState]{}
 	// Reconcile adds the finalizer with a patch that replaces the claim with the
@@ -118,16 +134,21 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	st, err := e.be.store.Bucket(ctx, e.name)
 	if errors.Is(err, s3client.ErrBucketExists) {
 		// The name belongs to another account: not ours, never touched.
-		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name)
+		return none, e.foreign(fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name))
 	}
 	if err != nil || !st.Exists {
 		return none, err
 	}
 	if st.Marker() != "" && st.Marker() != e.marker {
-		return none, fmt.Errorf("%w: bucket %q belongs to another claim", lifecycle.ErrNameCollision, e.name)
+		return none, e.foreign(fmt.Errorf("%w: bucket %q belongs to another claim", lifecycle.ErrNameCollision, e.name))
 	}
 	if st.Marker() == "" && e.claim.GetExternalID() != createIssued {
-		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name)
+		return none, e.foreign(fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name))
+	}
+	// A claim from before the create was recorded: the marker is the proof that
+	// the bucket is ours, so the record is made now (written with the status).
+	if st.Marker() == e.marker && e.claim.GetExternalID() == "" {
+		e.claim.SetExternalID(createIssued)
 	}
 	p, err := e.params(spec)
 	if err != nil {
@@ -136,6 +157,16 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	upToDate := st.Marker() == e.marker && st.Versioning == p.Versioning && st.Quota == p.Quota &&
 		s3client.RulesEqual(st.Rules, p.Rules)
 	return lifecycle.Observation[s3client.BucketState]{Exists: true, UpToDate: upToDate, Current: st}, nil
+}
+
+// foreign says what to do with a refusal of a bucket that is not this claim's:
+// a claim that is being deleted leaves the bucket alone and goes on (nil), any
+// other keeps the refusal.
+func (e *bucketExternal) foreign(refusal error) error {
+	if e.claim.DeletionTimestamp.IsZero() {
+		return refusal
+	}
+	return nil
 }
 
 // Create implements lifecycle.External; a data kind has no binding data.

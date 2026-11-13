@@ -28,10 +28,15 @@ another tenant's objects:
   reason `NameCollision`. A bucket with no marker is refused as unmanaged
   unless the claim's status recorded the create before it was issued
   (`status.externalId` is `create-issued`); the operator never adopts or
-  deletes a bucket it did not create;
+  deletes a bucket it did not create. Deleting the claim leaves such a bucket
+  alone and releases the finalizer: a claim whose status records no create is
+  released without contacting the store, and one that does is released over a
+  bucket whose marker names another claim, or that belongs to another account,
+  as if there were none;
 - IAM users cannot hold a marker, so the same rule rests on the status alone: a
   user that exists while the claim recorded no create is refused and never
-  changed or deleted. A user's policy is attached by name (`<user>-<digest of
+  changed or deleted (deleting the claim releases it without contacting the
+  store). A user's policy is attached by name (`<user>-<digest of
   the document>`), and only policies of that form are ever removed;
 - a cluster store serves only the namespaces its `allowedNamespaces` admits
   (`server.Resolve`), and a namespaced store only its own.
@@ -55,8 +60,9 @@ Plan row EB-3; [ADR 0002 of lib-operator-go](https://github.com/craftainer-labs/
 
 Unit and envtest suites, on every push: `TestDerivedNames` and
 `TestAccessKeyIsDeterministicPerGeneration` (`internal/s3client`),
-`TestBucketLifecycleRetain` and `TestBucketIntentFirstAdoption` (a collision
-or an unmarked bucket leaves no write and no delete),
+`TestBucketLifecycleRetain`, `TestBucketIntentFirstAdoption` and
+`TestBucketDeleteSkipsForeignBuckets` (a collision or an unmarked bucket leaves
+no write and no delete, also when the claim is deleted),
 `TestAccessNeverAdoptsAnUnmarkedUser`, `TestAccessRefusesAWideningPrefix`,
 `TestBucketWithoutAStoreOrANamespace` (`NamespaceNotAllowed`) and
 `TestAccessNeedsAUsableBucket` (`internal/controller`). Whether the claim

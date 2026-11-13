@@ -51,7 +51,8 @@ finalizers, `deletionPolicy`, `managementPolicies`, drift polling, the
   claim's, versioning (object lock implies it), lifecycle rules and the hard
   quota. Object lock is set only when the bucket is created. With
   `deletionPolicy: Delete` the bucket is deleted with the claim, if it is empty:
-  the operator never deletes objects.
+  the operator never deletes objects. Only a bucket the claim created is
+  deleted; see "Deleting a claim".
 - **BucketAccess** creates an IAM user with one policy for the bucket (and
   `prefix`), and one service account per credential generation. The binding
   Secret (type `servicebinding.io/s3`) holds the service account's keys.
@@ -114,7 +115,27 @@ The operator never adopts or deletes what it did not create.
   delete the stale user (and its policy and service accounts) with the RustFS
   admin tools, or rename the claim.
 
-A deletion blocked this way keeps the finalizer, by design.
+Deleting a claim in this state leaves the foreign object alone and releases the
+finalizer (see "Deleting a claim" below).
+
+### Deleting a claim
+
+- A claim that never issued a create on the store (`status.externalId` is
+  empty) is released without contacting the store, which may be gone: nothing
+  of it is there. A claim that is stuck as `NameCollision` is such a claim.
+- A claim that did issue one deletes only what is its own. A bucket whose
+  marker names another claim, or that belongs to another account, is skipped and the finalizer is released;
+  it is never deleted or changed, whatever the `deletionPolicy`. Its own
+  bucket follows the `deletionPolicy` as before (`Retain` leaves it, `Delete`
+  removes it when empty), and a store that cannot be reached still keeps the
+  finalizer for a claim that did issue a create.
+- "Issued a create" is `status.externalId`, written before the first create
+  request (a `Bucket` writes `create-issued`, a `BucketAccess` the key of the
+  active service account). A claim from before the record existed has none:
+  deleting it releases the claim and leaves the object, which is the safe
+  reading when the status does not say it is ours. A reconcile gives a `Bucket`
+  whose bucket carries its marker the record, so only a claim deleted before
+  its next reconcile is affected.
 
 ### Known limits
 

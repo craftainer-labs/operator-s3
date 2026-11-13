@@ -179,11 +179,19 @@ func TestAccessNeverAdoptsAnUnmarkedUser(t *testing.T) {
 	}
 	h.fake.wantNot(t, "ApplyAccess", "IssueKey", "DeleteAccess")
 
+	// Deleting the claim leaves the user alone and releases the claim, without
+	// contacting the store: the claim never issued a create.
 	h.must(env.Client.Delete(context.Background(), a))
+	h.fake.reset()
 	h.reconcileOK(ar, a)
-	h.fake.wantNot(t, "DeleteAccess")
-	if h.gone(a) {
-		t.Error("the finalizer was dropped over a user that is not ours")
+	if h.fake.joined() != "" {
+		t.Errorf("the store was contacted:\n%s", h.fake.joined())
+	}
+	if !h.gone(a) {
+		t.Error("the finalizer was kept over a user that is not ours")
+	}
+	if h.fake.users[user] == nil {
+		t.Error("the user that is not ours was deleted")
 	}
 }
 
