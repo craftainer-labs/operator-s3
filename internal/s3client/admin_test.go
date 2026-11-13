@@ -264,7 +264,7 @@ func TestDeleteAccess(t *testing.T) {
 		t.Errorf("policies = %v", f2.policy)
 	}
 
-	for _, failOn := range []string{"info-service-account", "delete-service-account", "remove-user", "list-canned-policies", "remove-canned-policy"} {
+	for _, failOn := range []string{"user-info", "info-service-account", "delete-service-account", "remove-user", "list-canned-policies", "remove-canned-policy"} {
 		f3 := newFakeStore(t)
 		c3 := f3.client()
 		_ = c3.ApplyAccess(bg, p, UserState{})
@@ -321,10 +321,11 @@ func TestQuota(t *testing.T) {
 	if err := c.setQuota(bg, "b", 0); err != nil {
 		t.Errorf("clear of a missing quota: %v", err)
 	}
-	// No quota set may be a 404.
+	// A 404 is NoSuchBucket (RustFS answers 200 with quota 0 for no quota), so
+	// it is an error, not "no quota".
 	f.statusOn["GET /rustfs/admin/v3/get-bucket-quota"] = 404
-	if q, err := c.quota(bg, "b"); err != nil || q != 0 {
-		t.Errorf("quota of a 404 = %d, %v", q, err)
+	if _, err := c.quota(bg, "b"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("quota of a 404: %v", err)
 	}
 	delete(f.statusOn, "GET /rustfs/admin/v3/get-bucket-quota")
 	f.setBody("GET /rustfs/admin/v3/get-bucket-quota", "not json")

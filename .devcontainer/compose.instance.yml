@@ -2,4 +2,59 @@
 # `include:` stack fragments and any extra `services.myapp` settings
 # (`env_file`, `environment`, `depends_on`) here, so `compose.yml` stays
 # template-owned.
-services: {}
+#
+# The RustFS the integration tests (`test/integration`, build tag
+# `integration`) run against: a real server with TLS on (a CA and server
+# certificate generated at start by `rustfs-tls-init`) and random admin
+# credentials, so the operator's verified connections are exercised for real.
+# The same script and image pin run in `.github/workflows/integration.yml`.
+# Run the tests from the devcontainer with
+#   go test -tags integration -count=1 ./test/integration/...
+# (the environment below points them at the server).
+services:
+  myapp:
+    environment:
+      S3_ENDPOINT: https://rustfs:9000
+      S3_CA_FILE: /rustfs-tls/ca.crt
+      S3_ADMIN_ACCESS_KEY_FILE: /rustfs-tls/admin-access-key
+      S3_ADMIN_SECRET_KEY_FILE: /rustfs-tls/admin-secret-key
+    volumes:
+      - rustfs-tls:/rustfs-tls:ro
+    depends_on:
+      rustfs:
+        condition: service_healthy
+
+  # Generates the CA, the server certificate (names: rustfs, localhost,
+  # 127.0.0.1) and the admin credentials into the rustfs-tls volume, once: a
+  # start keeps them while they stay valid, because a running rustfs has loaded
+  # them.
+  rustfs-tls-init:
+    # renovate: datasource=docker depName=alpine/openssl
+    image: alpine/openssl:3.5.9@sha256:6821afa2476e11be343f29275f2ca24291720ff0a7148bd131fd8e314ff26d9e
+    entrypoint: ["sh", "/it/gen-certs.sh", "/tls"]
+    volumes:
+      - ../test/integration:/it:ro
+      - rustfs-tls:/tls
+    restart: "no"
+
+  rustfs:
+    # renovate: datasource=docker depName=rustfs/rustfs
+    image: rustfs/rustfs:1.0.0-rc.5-glibc@sha256:d14642b8ade7438d75543a357ef2c9dfa7ac06575995163fc692642a24816a51
+    environment:
+      RUSTFS_TLS_PATH: /tls
+      RUSTFS_ACCESS_KEY_FILE: /tls/admin-access-key
+      RUSTFS_SECRET_KEY_FILE: /tls/admin-secret-key
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes:
+      - rustfs-tls:/tls:ro
+    depends_on:
+      rustfs-tls-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--cacert", "/tls/ca.crt", "https://localhost:9000/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  rustfs-tls:

@@ -205,6 +205,64 @@ func TestBucketRecordsTheCreateFirst(t *testing.T) {
 	h.fake.wantNot(t, "CreateBucket")
 }
 
+// A bucket of another account (the store refuses the read) is a name collision
+// before any create, and nothing is written.
+func TestBucketOfAnotherAccountIsACollision(t *testing.T) {
+	h := newHarness(t, common.DeletionRetain, nil)
+	r := &BucketReconciler{h.cfg}
+	b := h.bucket("foreign", nil)
+	h.fake.fail["Bucket"] = fmt.Errorf("%w: refused", s3client.ErrBucketExists)
+	_ = h.reconcile(r, b)
+	h.get(b)
+	msg := h.wantCondition(b.Status.Conditions, conditions.Synced, metav1.ConditionFalse, conditions.NameCollision)
+	if !strings.Contains(msg, ErrExistsUnmanaged.Error()) {
+		t.Errorf("message = %q", msg)
+	}
+	h.fake.wantNot(t, "CreateBucket")
+}
+
+// A bucket made by somebody else between Observe and the create is a name
+// collision, and the record of the create is withdrawn so that the next
+// reconcile does not take the bucket over.
+func TestBucketCreateRacesWithAnotherCreator(t *testing.T) {
+	h := newHarness(t, common.DeletionRetain, nil)
+	r := &BucketReconciler{h.cfg}
+	b := h.bucket("raced", nil)
+	h.fake.fail["CreateBucket"] = s3client.ErrBucketExists
+	_ = h.reconcile(r, b)
+	h.get(b)
+	msg := h.wantCondition(b.Status.Conditions, conditions.Synced, metav1.ConditionFalse, conditions.NameCollision)
+	if !strings.Contains(msg, ErrExistsUnmanaged.Error()) {
+		t.Errorf("message = %q", msg)
+	}
+	if b.Status.ExternalID != "" {
+		t.Errorf("externalId = %q, want it withdrawn", b.Status.ExternalID)
+	}
+
+	// The same, when withdrawing the record fails: the error is the write's.
+	b2 := h.bucket("raced-again", nil)
+	wc, err := client.NewWithWatch(env.Config, client.Options{Scheme: env.Scheme})
+	h.must(err)
+	boom := errors.New("status write failed")
+	recorded := false
+	cfg := h.cfg
+	cfg.Client = interceptor.NewClient(wc, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if bk, ok := obj.(*s3v1alpha1.Bucket); ok && bk.Name == "raced-again" {
+				if bk.Status.ExternalID == createIssued {
+					recorded = true
+				} else if recorded && bk.Status.ExternalID == "" {
+					return boom
+				}
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	})
+	if err := h.reconcile(&BucketReconciler{cfg}, b2); !errors.Is(err, boom) {
+		t.Errorf("withdraw: %v", err)
+	}
+}
+
 // An unreachable store is a condition and a retry; the text is the fixed one.
 func TestBucketOnAnUnreachableStore(t *testing.T) {
 	h := newHarness(t, common.DeletionDelete, nil)

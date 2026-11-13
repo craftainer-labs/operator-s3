@@ -14,8 +14,9 @@ See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared by every
 instance.
 
 Status: the `Bucket` and `BucketAccess` controllers are in place, tested against
-an in-memory store and an HTTPS test server. They have not run against a real
-RustFS yet (item NO3b-2, below). The stores do not report health yet (below).
+an in-memory store and an HTTPS test server, and the RustFS client against a
+real RustFS with TLS in the integration lane (see "Testing"). The stores do not
+report health yet (below).
 
 ## API
 
@@ -115,15 +116,30 @@ The operator never adopts or deletes what it did not create.
 
 A deletion blocked this way keeps the finalizer, by design.
 
+### Known limits
+
+- Policy document drift is not detected, only which policy is attached.
+- RustFS removes every service account of a user together with the user. The
+  operator derives the service accounts it deletes by name, but it cannot spare
+  an account somebody else added under the user's name once the claim is
+  deleted.
+- RustFS can answer a quota write with `503` until it has confirmed the quota
+  capability across the cluster, which a node that has just started does a
+  little later. The `Bucket` reconcile fails and retries until it is ready.
+- A bucket created by somebody else between the operator's read and its create
+  is refused as a name collision: RustFS would answer the create of an existing
+  bucket with success for the admin, so the client checks first (a `403` on
+  that check, with the admin credentials otherwise accepted, is a collision
+  too, and so is the same refusal when the `Bucket` is read; a probe that fails
+  is reported instead of a collision, and a bucket of your own whose HEAD is
+  denied, by a bucket policy for example, is reported as a collision too). The window
+  between that check and the create is not closed by RustFS: a create by the
+  same admin identity inside it is adopted. The operator therefore needs
+  dedicated admin credentials that no other creator shares; a create by a
+  different account gets `BucketAlreadyExists`.
+
 ### Not done yet
 
-- **NO3b-2:** a real RustFS lane (a TLS RustFS service in the devcontainer and
-  in CI) to check the admin routes, the SigV4 signatures, the 404 versus 500
-  answers for a missing object, the quota body (and whether a bucket without a
-  quota answers 404, which the client reads as no quota), the canned policy list,
-  tagging and lifecycle, and that a policy confines a key to its bucket and
-  prefix. Policy document drift is not
-  detected, only which policy is attached.
 - **NOX-probe:** the store kinds do not probe their server: `ServerStatus`
   (`serverVersion`, `lastProbeTime`, the `Ready` and `ServerReachable`
   conditions) stays empty until the probe lands in `lib-operator-go`.
@@ -140,6 +156,18 @@ make helm-lint     # lint the chart, check it matches config/
 make bundle-validate   # OLM bundle (operator-sdk) and catalog (opm)
 make operator-help # every operator target
 prek run --all-files --hook-stage manual   # all checks
+```
+
+The unit and envtest suites run against an in-memory store and an HTTPS test
+server and hold the 100% coverage gate. The RustFS client is also run against a
+real RustFS 1.0.0-rc.5 with TLS (verified connections, random admin
+credentials) by the integration tests in
+[`test/integration`](test/integration/README.md) (build tag `integration`):
+the `Integration` workflow in CI, the `rustfs` service of the devcontainer
+locally.
+
+```sh
+go test -tags integration -count=1 ./test/integration/...
 ```
 
 Releases go through `release.yml` as in `template-docker`; right after each

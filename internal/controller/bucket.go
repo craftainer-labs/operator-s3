@@ -116,6 +116,10 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	// server's copy, which loses a name set before it; set it again here.
 	e.claim.SetExternalName(e.name)
 	st, err := e.be.store.Bucket(ctx, e.name)
+	if errors.Is(err, s3client.ErrBucketExists) {
+		// The name belongs to another account: not ours, never touched.
+		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name)
+	}
 	if err != nil || !st.Exists {
 		return none, err
 	}
@@ -145,7 +149,18 @@ func (e *bucketExternal) Create(ctx context.Context, spec s3v1alpha1.BucketSpec)
 	if err := e.persist(ctx); err != nil {
 		return nil, err
 	}
-	return nil, e.be.store.CreateBucket(ctx, p)
+	err = e.be.store.CreateBucket(ctx, p)
+	if !errors.Is(err, s3client.ErrBucketExists) {
+		return nil, err
+	}
+	// Somebody made the bucket between Observe and this create (RustFS would
+	// have answered the create with success). It is not ours, and the record
+	// above must not let the next reconcile take it over.
+	e.claim.SetExternalID("")
+	if err := e.persist(ctx); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name)
 }
 
 // Update implements lifecycle.External.

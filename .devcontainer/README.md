@@ -22,7 +22,12 @@
   `claude-config` volume's mount path (see "Do").
 - `compose.instance.yml` — instance-owned stub (`ignore` tier, never
   touched by sync): an instance's `include:` list and extra `services.myapp`
-  settings. See `docs/TEMPLATE.md`'s "Instance extension points".
+  settings. See `docs/TEMPLATE.md`'s "Instance extension points". This
+  instance puts its integration RustFS there (`rustfs`, with the one-shot
+  `rustfs-tls-init` that generates its CA, server certificate and admin
+  credentials into the `rustfs-tls` volume, using `../test/integration`'s
+  script) and the `S3_*` variables of `myapp` that point the tests at it;
+  adding or changing it needs a devcontainer rebuild.
 
 ## Docker-in-Docker vs. the host's Docker
 

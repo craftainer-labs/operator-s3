@@ -33,7 +33,7 @@ import (
 
 // The reconcile flow runs against envtest's kube-apiserver with an in-memory
 // store behind the Store interface, so it needs no RustFS. The real RustFS
-// integration lane is NO3b-2. The suite needs the binaries
+// integration lane is test/integration. The suite needs the binaries
 // scripts/go-coverage.sh and `make test` fetch with setup-envtest.
 
 var env *testenv.Env

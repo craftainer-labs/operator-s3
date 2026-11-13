@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -59,11 +60,28 @@ func sortedRules(r []Rule) []Rule {
 // RulesEqual reports whether two rule lists hold the same rules, in any order.
 func RulesEqual(a, b []Rule) bool { return slices.Equal(sortedRules(a), sortedRules(b)) }
 
-// Bucket reads the bucket name: its existence, tags, versioning, lifecycle
-// rules and quota.
-func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
+// head reports whether the bucket exists. A refused HEAD is a bucket of
+// another account: ErrBucketExists, whatever the claim's own state, unless the
+// admin credentials themselves are refused, which an admin call tells apart
+// (its failure is the answer).
+func (c *Client) head(ctx context.Context, name string) (bool, error) {
 	ok, err := c.mc.BucketExists(ctx, name)
-	if err = c.s3(ctx, "HEAD bucket", err); err != nil || !ok {
+	err = c.s3(ctx, "HEAD bucket", err)
+	var refusal *Error
+	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
+		if _, probe := c.admin(ctx, http.MethodGet, "/list-canned-policies", nil, nil); probe != nil {
+			return false, probe
+		}
+		return false, ErrBucketExists
+	}
+	return ok, err
+}
+
+// Bucket reads the bucket name: its existence, tags, versioning, lifecycle
+// rules and quota. A bucket of another account is ErrBucketExists.
+func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
+	ok, err := c.head(ctx, name)
+	if err != nil || !ok {
 		return BucketState{}, err
 	}
 	st := BucketState{Exists: true, Tags: map[string]string{}}
@@ -118,10 +136,25 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 	return nil
 }
 
-// CreateBucket makes the bucket and applies the rest of the parameters.
+// CreateBucket makes the bucket and applies the rest of the parameters. A
+// bucket that exists already is ErrBucketExists, whoever made it: RustFS
+// answers a create by the owner of an existing bucket with success, so without
+// this check a bucket made between the caller's read and this create would be
+// taken over silently. The check is not atomic (S3 has no create-if-absent
+// that RustFS enforces for the owner, and no tags at create), so a creator
+// holding the same admin credentials that wins the narrow gap between the
+// check and the create is still adopted; a different account gets
+// BucketAlreadyExists from the create instead.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
-	err := c.mc.MakeBucket(ctx, p.Name, minio.MakeBucketOptions{Region: c.region, ObjectLocking: p.ObjectLock})
-	if err := c.s3(ctx, "PUT bucket", err); err != nil {
+	exists, err := c.head(ctx, p.Name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return ErrBucketExists
+	}
+	err = c.mc.MakeBucket(ctx, p.Name, minio.MakeBucketOptions{Region: c.region, ObjectLocking: p.ObjectLock})
+	if err = c.s3(ctx, "PUT bucket", err); err != nil {
 		return err
 	}
 	return c.configure(ctx, p, BucketState{})

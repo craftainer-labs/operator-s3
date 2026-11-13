@@ -3,6 +3,7 @@ package s3client
 import (
 	"errors"
 	"math"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -146,6 +147,38 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 			t.Errorf("create, %s: no error", failOn)
 		}
 	}
+	// A bucket that exists already is never created over: RustFS would answer
+	// the owner's create with 200.
+	g := newFakeStore(t)
+	g.bucket["bkt"] = &fakeBucket{tags: map[string]string{}}
+	g.reset()
+	if err := g.client().CreateBucket(bg, p); !errors.Is(err, ErrBucketExists) || g.asked("PUT /bkt") {
+		t.Errorf("create over an existing bucket: %v, requests %v", err, g.requests())
+	}
+	g.failOn = "HEAD /bkt"
+	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("a failing existence check: %v", err)
+	}
+	// A name another account owns answers the HEAD with 403: also a collision.
+	g.statusOn["HEAD /bkt"] = http.StatusForbidden
+	if err := g.client().CreateBucket(bg, p); !errors.Is(err, ErrBucketExists) {
+		t.Errorf("a forbidden existence check: %v", err)
+	}
+	// Unless the admin credentials themselves are refused.
+	g.statusOn["list-canned-policies"] = http.StatusForbidden
+	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("a forbidden existence check with refused credentials: %v", err)
+	}
+	g.statusOn["list-canned-policies"] = http.StatusForbidden
+	if _, err := g.client().Bucket(bg, "bkt"); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("Bucket, forbidden, credentials refused: %v", err)
+	}
+	delete(g.statusOn, "list-canned-policies")
+	// Bucket, which Observe uses, reads the same refusal the same way.
+	if _, err := g.client().Bucket(bg, "bkt"); !errors.Is(err, ErrBucketExists) {
+		t.Errorf("Bucket, forbidden: %v", err)
+	}
+	delete(g.statusOn, "HEAD /bkt")
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.
 	f := newFakeStore(t)
