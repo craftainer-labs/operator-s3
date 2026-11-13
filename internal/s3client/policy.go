@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
+	"regexp"
 )
 
 type statement struct {
@@ -50,5 +50,13 @@ func PolicyName(user string, doc []byte) string {
 	return user + "-" + hex.EncodeToString(sum[:4])
 }
 
+// ownedPolicy is the exact shape PolicyName gives: the user, a dash and eight
+// hex characters. A looser prefix match would also take a policy an admin
+// attached by hand, or one of another user whose name starts with this one.
+var ownedPolicy = regexp.MustCompile(`^(.*)-[0-9a-f]{8}$`)
+
 // OwnsPolicy reports whether a policy name is one PolicyName gave to user.
-func OwnsPolicy(user, policy string) bool { return strings.HasPrefix(policy, user+"-") }
+func OwnsPolicy(user, policy string) bool {
+	m := ownedPolicy.FindStringSubmatch(policy)
+	return m != nil && m[1] == user
+}

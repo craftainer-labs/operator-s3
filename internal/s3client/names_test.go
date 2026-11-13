@@ -70,6 +70,9 @@ func TestAccessPolicy(t *testing.T) {
 	if PolicyName("u", []byte(rw)) == PolicyName("u", []byte(ro)) || again != PolicyName("u", []byte(rw)) {
 		t.Error("policy names")
 	}
+	if OwnsPolicy("u", "u-extra") || OwnsPolicy("u", "u-v-0123abcd") || !OwnsPolicy("u-v", "u-v-0123abcd") {
+		t.Error("ownership is the exact shape user-<8 hex>")
+	}
 	if !OwnsPolicy("u", PolicyName("u", []byte(rw))) || OwnsPolicy("u", "readwrite") || OwnsPolicy("u", PolicyName("v", []byte(rw))) {
 		t.Error("OwnsPolicy")
 	}
