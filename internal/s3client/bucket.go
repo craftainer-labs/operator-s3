@@ -122,7 +122,11 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 // bucket that exists already is ErrBucketExists, whoever made it: RustFS
 // answers a create by the owner of an existing bucket with success, so without
 // this check a bucket made between the caller's read and this create would be
-// taken over silently.
+// taken over silently. The check is not atomic (S3 has no create-if-absent
+// that RustFS enforces for the owner, and no tags at create), so a creator
+// holding the same admin credentials that wins the narrow gap between the
+// check and the create is still adopted; a different account gets
+// BucketAlreadyExists from the create instead.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
 	exists, err := c.mc.BucketExists(ctx, p.Name)
 	if err = c.s3(ctx, "HEAD bucket", err); err != nil {

@@ -264,7 +264,7 @@ func TestDeleteAccess(t *testing.T) {
 		t.Errorf("policies = %v", f2.policy)
 	}
 
-	for _, failOn := range []string{"info-service-account", "delete-service-account", "remove-user", "list-canned-policies", "remove-canned-policy"} {
+	for _, failOn := range []string{"user-info", "info-service-account", "delete-service-account", "remove-user", "list-canned-policies", "remove-canned-policy"} {
 		f3 := newFakeStore(t)
 		c3 := f3.client()
 		_ = c3.ApplyAccess(bg, p, UserState{})

@@ -199,7 +199,7 @@ func TestAnswersForMissingThings(t *testing.T) {
 		{"add-service-accounts for a missing user", http.MethodPut, "/add-service-accounts", nil,
 			`{"targetUser":"` + missing + `","accessKey":"` + strings.ToUpper(missing) + `","secretKey":"` + newSecret() + `"}`, http.StatusBadRequest},
 		{"delete-service-account", http.MethodDelete, "/delete-service-account", url.Values{"accessKey": {missing}}, "", http.StatusBadRequest},
-		{"remove-user", http.MethodDelete, "/remove-user", url.Values{"accessKey": {missing}}, "", http.StatusOK},
+		{"remove-user", http.MethodDelete, "/remove-user", url.Values{"accessKey": {missing}}, "", http.StatusInternalServerError},
 		{"remove-canned-policy", http.MethodDelete, "/remove-canned-policy", url.Values{"name": {missing}}, "", http.StatusOK},
 	} {
 		status, body := sv.raw(t, tc.method, tc.path, tc.query, []byte(tc.body))
@@ -480,8 +480,9 @@ func TestNameAndKeyLimits(t *testing.T) {
 		t.Errorf("owned = %v, %v", owned, err)
 	}
 	body := []byte(`{"secretKey":"` + newSecret() + `","status":"enabled"}`)
-	if status, _ := sv.raw(t, http.MethodPut, "/add-user", url.Values{"accessKey": {"ab"}}, body); status != http.StatusBadRequest {
-		t.Errorf("a 2-character user: HTTP %d, want 400", status)
+	if status, _ := sv.raw(t, http.MethodPut, "/add-user", url.Values{"accessKey": {"ab"}}, body); status != http.StatusInternalServerError {
+		// RustFS rejects it with 500, not 400.
+		t.Errorf("a 2-character user: HTTP %d, want 500", status)
 	}
 
 	for _, tc := range []struct {

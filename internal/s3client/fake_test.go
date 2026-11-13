@@ -247,7 +247,7 @@ func (f *fakeStore) admin(w http.ResponseWriter, r *http.Request, path string, b
 		f.user[q.Get("accessKey")].status = q.Get("status")
 	case "DELETE /remove-user":
 		if f.user[q.Get("accessKey")] == nil {
-			xmlError(w, http.StatusNotFound, "XAdminNoSuchUser")
+			xmlError(w, http.StatusInternalServerError, "InternalError")
 			return
 		}
 		delete(f.user, q.Get("accessKey"))

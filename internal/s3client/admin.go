@@ -204,8 +204,17 @@ func (c *Client) DeleteAccess(ctx context.Context, user string, keys []string) e
 			return err
 		}
 	}
-	if err := ignoreNotFound(c.run(ctx, http.MethodDelete, "/remove-user", url.Values{"accessKey": {user}}, nil)); err != nil {
+	// RustFS answers remove-user for a user that does not exist with HTTP 500
+	// ("does not exist" in the message), not 404, so the user is looked up
+	// first rather than the answer's text relied on.
+	st, err := c.User(ctx, user)
+	if err != nil {
 		return err
+	}
+	if st.Exists {
+		if err := ignoreNotFound(c.run(ctx, http.MethodDelete, "/remove-user", url.Values{"accessKey": {user}}, nil)); err != nil {
+			return err
+		}
 	}
 	policies, err := c.OwnedPolicies(ctx, user)
 	if err != nil {
