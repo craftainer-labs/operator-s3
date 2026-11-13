@@ -116,6 +116,10 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	// server's copy, which loses a name set before it; set it again here.
 	e.claim.SetExternalName(e.name)
 	st, err := e.be.store.Bucket(ctx, e.name)
+	if errors.Is(err, s3client.ErrBucketExists) {
+		// The name belongs to another account: not ours, never touched.
+		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name)
+	}
 	if err != nil || !st.Exists {
 		return none, err
 	}

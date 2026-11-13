@@ -130,8 +130,7 @@ A deletion blocked this way keeps the finalizer, by design.
   is refused as a name collision: RustFS would answer the create of an existing
   bucket with success for the admin, so the client checks first (a `403` on
   that check, with the admin credentials otherwise accepted, is a collision
-  too; the `Bucket` read before it reports a refused HEAD as a store
-  authentication failure instead). The window
+  too, and so is the same refusal when the `Bucket` is read). The window
   between that check and the create is not closed by RustFS: a create by the
   same admin identity inside it is adopted. The operator therefore needs
   dedicated admin credentials that no other creator shares; a create by a

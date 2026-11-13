@@ -60,11 +60,28 @@ func sortedRules(r []Rule) []Rule {
 // RulesEqual reports whether two rule lists hold the same rules, in any order.
 func RulesEqual(a, b []Rule) bool { return slices.Equal(sortedRules(a), sortedRules(b)) }
 
-// Bucket reads the bucket name: its existence, tags, versioning, lifecycle
-// rules and quota.
-func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
+// head reports whether the bucket exists. A refused HEAD is a bucket of
+// another account: ErrBucketExists, whatever the claim's own state, unless the
+// admin credentials themselves are refused, which an admin call tells apart
+// (its failure is the answer).
+func (c *Client) head(ctx context.Context, name string) (bool, error) {
 	ok, err := c.mc.BucketExists(ctx, name)
-	if err = c.s3(ctx, "HEAD bucket", err); err != nil || !ok {
+	err = c.s3(ctx, "HEAD bucket", err)
+	var refusal *Error
+	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
+		if _, probe := c.admin(ctx, http.MethodGet, "/list-canned-policies", nil, nil); probe != nil {
+			return false, probe
+		}
+		return false, ErrBucketExists
+	}
+	return ok, err
+}
+
+// Bucket reads the bucket name: its existence, tags, versioning, lifecycle
+// rules and quota. A bucket of another account is ErrBucketExists.
+func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
+	ok, err := c.head(ctx, name)
+	if err != nil || !ok {
 		return BucketState{}, err
 	}
 	st := BucketState{Exists: true, Tags: map[string]string{}}
@@ -129,18 +146,7 @@ func (c *Client) readRules(ctx context.Context, name string, st *BucketState) er
 // check and the create is still adopted; a different account gets
 // BucketAlreadyExists from the create instead.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
-	exists, err := c.mc.BucketExists(ctx, p.Name)
-	err = c.s3(ctx, "HEAD bucket", err)
-	var refusal *Error
-	if errors.As(err, &refusal) && refusal.Status == http.StatusForbidden {
-		// A refused HEAD is a bucket of another account, unless the admin
-		// credentials themselves are refused: an admin call tells the two
-		// apart, and a failure of it is the answer.
-		if _, probe := c.admin(ctx, http.MethodGet, "/list-canned-policies", nil, nil); probe != nil {
-			return probe
-		}
-		return ErrBucketExists
-	}
+	exists, err := c.head(ctx, p.Name)
 	if err != nil {
 		return err
 	}

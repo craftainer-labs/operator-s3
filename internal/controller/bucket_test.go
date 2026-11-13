@@ -205,6 +205,22 @@ func TestBucketRecordsTheCreateFirst(t *testing.T) {
 	h.fake.wantNot(t, "CreateBucket")
 }
 
+// A bucket of another account (the store refuses the read) is a name collision
+// before any create, and nothing is written.
+func TestBucketOfAnotherAccountIsACollision(t *testing.T) {
+	h := newHarness(t, common.DeletionRetain, nil)
+	r := &BucketReconciler{h.cfg}
+	b := h.bucket("foreign", nil)
+	h.fake.fail["Bucket"] = fmt.Errorf("%w: refused", s3client.ErrBucketExists)
+	_ = h.reconcile(r, b)
+	h.get(b)
+	msg := h.wantCondition(b.Status.Conditions, conditions.Synced, metav1.ConditionFalse, conditions.NameCollision)
+	if !strings.Contains(msg, ErrExistsUnmanaged.Error()) {
+		t.Errorf("message = %q", msg)
+	}
+	h.fake.wantNot(t, "CreateBucket")
+}
+
 // A bucket made by somebody else between Observe and the create is a name
 // collision, and the record of the create is withdrawn so that the next
 // reconcile does not take the bucket over.

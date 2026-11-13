@@ -169,7 +169,15 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 	if err := g.client().CreateBucket(bg, p); err == nil || errors.Is(err, ErrBucketExists) {
 		t.Errorf("a forbidden existence check with refused credentials: %v", err)
 	}
+	g.statusOn["list-canned-policies"] = http.StatusForbidden
+	if _, err := g.client().Bucket(bg, "bkt"); err == nil || errors.Is(err, ErrBucketExists) {
+		t.Errorf("Bucket, forbidden, credentials refused: %v", err)
+	}
 	delete(g.statusOn, "list-canned-policies")
+	// Bucket, which Observe uses, reads the same refusal the same way.
+	if _, err := g.client().Bucket(bg, "bkt"); !errors.Is(err, ErrBucketExists) {
+		t.Errorf("Bucket, forbidden: %v", err)
+	}
 	delete(g.statusOn, "HEAD /bkt")
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.
