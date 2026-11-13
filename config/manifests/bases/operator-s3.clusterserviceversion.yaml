@@ -15,6 +15,15 @@ metadata:
     # the operator honours HTTP(S)_PROXY/NO_PROXY, and "fips-compliant" for a
     # build with GOFIPS140 (see the Dockerfile) run with GODEBUG=fips140=on.
     operators.openshift.io/infrastructure-features: '["disconnected"]'
+    # The same features as OpenShift's current keys (EB-5). Not proxy-aware: the
+    # operator reads no HTTP(S)_PROXY; a store's proxy is spec.proxyURL.
+    features.operators.openshift.io/disconnected: "true"
+    features.operators.openshift.io/fips-compliant: "false"
+    features.operators.openshift.io/proxy-aware: "false"
+    features.operators.openshift.io/tls-profiles: "false"
+    features.operators.openshift.io/token-auth-aws: "false"
+    features.operators.openshift.io/token-auth-azure: "false"
+    features.operators.openshift.io/token-auth-gcp: "false"
     repository: https://github.com/craftainer-labs/operator-s3
   name: operator-s3.v0.0.0
   namespace: placeholder

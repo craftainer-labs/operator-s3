@@ -41,6 +41,28 @@ manager:
   args:
     - --leader-elect
 
+  ## Extra environment variables for the manager container (EB-5). POD_NAMESPACE,
+  ## EGRESS_MODE and DEFAULT_DATA_DELETION_POLICY are set by the chart (use
+  ## egressMode and defaultDataDeletionPolicy); the schema rejects them here.
+  ## E.g. HTTP(S)_PROXY and NO_PROXY for the Kubernetes API client, or
+  ## SSL_CERT_FILE with a custom CA bundle mounted through extraVolumes and
+  ## extraVolumeMounts. The operator makes no outbound call of its own: it talks
+  ## to the Kubernetes API and to the object stores named by the store kinds, and
+  ## it never reads HTTP(S)_PROXY for those. A store's own proxy and CA bundle
+  ## are set on the store object (spec.proxyURL, spec.tls.caBundle), not here.
+  ## Note that HTTPS_PROXY also applies to the API client, so list the API
+  ## server in NO_PROXY.
+  ##
+  extraEnv: []
+  # extraEnv:
+  #   - name: NO_PROXY
+  #     value: .svc,.cluster.local,10.0.0.0/8
+
+  ## Extra volumes and mounts for the manager, e.g. a custom CA bundle.
+  ##
+  # extraVolumes: []
+  # extraVolumeMounts: []
+
   ## Health probes.
   ## The manager serves the liveness (/healthz) and readiness (/readyz) endpoints on this port.
   ##

@@ -165,6 +165,113 @@ finalizer (see "Deleting a claim" below).
   (`serverVersion`, `lastProbeTime`, the `Ready` and `ServerReachable`
   conditions) stays empty until the probe lands in `lib-operator-go`.
 
+## Install
+
+Helm and OLM v1 need cert-manager for the webhooks' serving certificate; OLM
+v0 issues its own, so it needs none. The released chart, bundle and catalog are
+on GHCR, signed and attested (`release-extras.yml`, see `docs/TEMPLATE.md`).
+
+### Helm
+
+```sh
+helm install operator-s3 oci://ghcr.io/craftainer-labs/charts/operator-s3 \
+  --version X.Y.Z --namespace operator-s3-system --create-namespace \
+  --set egressMode=allow-private
+```
+
+A released chart pins the manager image by digest. Values worth knowing (the
+schema, `charts/chart/values.schema.json`, rejects a misspelt enum or digest):
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `egressMode` | `strict` | `allow-private` is the usual choice when stores live on cluster or private addresses, such as a RustFS Service |
+| `defaultDataDeletionPolicy` | `Retain` | the `deletionPolicy` a new `Bucket` is pinned to when it leaves it unset |
+| `global.imageRegistry` | empty | pull the image from a mirror (air-gapped, EB-5) |
+| `manager.image.digest` | set when released | image by digest; wins over `tag` |
+| `manager.extraEnv` | `[]` | extra environment, rendered after the chart's own (not `POD_NAMESPACE`, `EGRESS_MODE` or `DEFAULT_DATA_DELETION_POLICY`: the chart sets them, and the schema rejects them here), e.g. `NO_PROXY` or `HTTPS_PROXY` for the Kubernetes API client, or `SSL_CERT_FILE` with a bundle mounted through `manager.extraVolumes` and `manager.extraVolumeMounts` |
+| `manager.podSecurityContext`, `manager.securityContext` | restricted | non-root, seccomp `RuntimeDefault`, no privilege escalation, all capabilities dropped, read-only root filesystem (EB-10); the e2e installs into a `restricted` namespace as an arbitrary UID |
+| `crd.keep` | `true` | keep the CRDs, and with them every claim, when the release is uninstalled |
+
+The operator makes no outbound call except to the Kubernetes API and to the
+RustFS stores named by the store kinds, and it sends no telemetry. A store's
+proxy and CA bundle belong to the store object (`spec.proxyURL`,
+`spec.tls.caBundle`), not to the chart.
+
+The CSV therefore declares `features.operators.openshift.io/proxy-aware: "false"`:
+the operator reads no `HTTP(S)_PROXY` (the RustFS client takes its proxy from the
+store's `spec.proxyURL`), and the in-cluster Kubernetes API client needs no
+proxy. `disconnected` is `"true"` and the fips, tls-profiles and token-auth
+features are `"false"`.
+
+### OLM
+
+`make bundle` writes the bundle from `config/manifests` (`make bundle-validate`
+checks it offline; `bundle/` is generated and not committed). It supports
+`AllNamespaces` only, pins the manager image by digest and lists it in
+`spec.relatedImages`. The released bundle and a single-bundle catalog are
+`ghcr.io/craftainer-labs/operator-s3-bundle` and `...-catalog`; add the catalog
+as a `CatalogSource` (OLM v0) or a `ClusterCatalog` (OLM v1) and subscribe or
+create a `ClusterExtension`.
+
+## Backup and restore
+
+The operator holds no data of its own: everything it knows is in Kubernetes
+objects and in RustFS.
+
+| Kept in | What | Back it up with |
+| --- | --- | --- |
+| Kubernetes | the four kinds and their status, binding Secrets (`servicebinding.io/s3`), the admin Secrets and CA bundles that stores reference | your cluster backup (Velero, GitOps, etcd). Restore the stores and admin Secrets first, then the claims |
+| RustFS | the buckets and their objects, versioning, lifecycle rules, quotas and object lock, the ownership markers (the bucket tag `craftainer.dev/claim`), and the IAM users, their policies and service accounts (the access keys) | RustFS's own tooling: replicate or copy the buckets (for example `mc mirror` or bucket replication) and keep a snapshot of the data volumes; the IAM state lives in the same store |
+
+The operator never copies or restores data. What it does on a restore:
+
+- Restoring `Bucket` claims into a cluster whose RustFS still has the buckets:
+  a claim whose bucket carries its marker
+  (`craftainer.dev/claim=<namespace>/<name>/<uid>`) is re-adopted. A restored
+  claim has a new UID, so its old marker names another claim: it reports
+  `NameCollision` and nothing is changed. Hand the bucket over by putting the
+  tag `craftainer.dev/claim=<namespace>/<name>/<uid>` on it, with the restored
+  claim's UID; the next reconcile takes it over. A bucket without the tag
+  reports `NameCollision` the same way.
+- Restoring a `BucketAccess`: an IAM user carries no marker, so one that exists
+  while the claim never recorded creating it reports `NameCollision`. Delete the
+  stale user (and its policy and service accounts) with RustFS's admin tools and
+  the claim creates it again, or rename the claim. If your backup restores
+  `status`, the claim keeps its record (`status.externalId`) and its rotation
+  state and carries on.
+- Binding Secrets are rewritten by the operator, so a restore of them is not
+  required. The operator cannot read a secret key back from RustFS: a binding
+  Secret that is missing or does not hold the active key is replaced by a new
+  key issued through a rotation with a grace period, so consumers read the new
+  Secret.
+- Restoring RustFS from a snapshot brings its users and keys back as they were
+  at the snapshot; keys issued or rotated since are gone, and the next reconcile
+  issues what the claim needs again.
+
+`deletionPolicy` (on `Bucket` only; a `BucketAccess` always removes the user,
+policies and service accounts it derived, and never the bucket) decides what
+deleting a claim does to the data:
+
+- `Retain` (the default; `DEFAULT_DATA_DELETION_POLICY` sets it for a claim that
+  leaves it unset, pinned in `status.effectiveDeletionPolicy`): the bucket and
+  its objects stay on the store, the finalizer is released. A later claim of the
+  same name needs the marker handed over (above).
+- `Delete`: the bucket is deleted if it is empty. The operator never deletes
+  objects, so a bucket that still holds objects (or versions or delete markers)
+  keeps the finalizer and the claim reports the failure until you empty it.
+  Take a backup first; there is no undo.
+- Either way, a bucket whose marker names another claim is skipped and the
+  finalizer released, and a claim that never issued a create touches nothing
+  (see "Deleting a claim").
+- Uninstalling the chart with `crd.keep=false`, or deleting a CRD, deletes every
+  claim of that kind and applies each claim's policy.
+
+Limit: a `BucketAccess` has no marker to heal from. A claim from before
+`status.externalId` existed is treated as never having created its user, so
+deleting it leaves the user in the store; remove it with RustFS's admin tools.
+RustFS removes a user's service accounts together with the user, so any account
+somebody else added under the user's name goes with it.
+
 ## Quick start
 
 Open the repository in its devcontainer (the Go and Kubernetes tools are

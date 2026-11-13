@@ -1,7 +1,8 @@
 # Installs the Helm chart into a Pod Security `restricted` namespace, with the
 # manager running as an arbitrary UID, then exercises the s3.craftainer.dev API
-# end to end: the CRDs, their defaults and the webhooks (the controllers come
-# later). The steps run in order; the cluster is thrown away afterwards.
+# (CRDs, schema defaults and rules, webhooks) and each kind's create, ready and
+# delete path against a TLS RustFS that runs in the cluster. The steps run in
+# order; the cluster is thrown away afterwards.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -28,6 +29,9 @@ spec:
                 --set manager.image.tag="$E2E_IMAGE_TAG" \
                 --set manager.image.pullPolicy=Never \
                 --set manager.podSecurityContext.runAsUser=12345 \
+                --set egressMode=allow-private \
+                --set 'manager.extraEnv[0].name=NO_PROXY' \
+                --set 'manager.extraEnv[0].value=.svc\,.cluster.local' \
                 --wait --timeout 4m
         - assert:
             resource:
@@ -41,7 +45,7 @@ spec:
         - script:
             content: helm uninstall operator-s3 --namespace "$NAMESPACE" --ignore-not-found
 
-    - name: runs as an arbitrary UID with leader election
+    - name: runs as an arbitrary UID, restricted, with leader election
       try:
         - script:
             content: |
@@ -50,6 +54,16 @@ spec:
               test "$uid" = 12345
               ro=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.containers[0].securityContext.readOnlyRootFilesystem}')
               test "$ro" = true
+              # EB-10: restricted profile, all capabilities dropped, no escalation.
+              ctr='{.items[0].spec.containers[0].securityContext}'
+              sc=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath="$ctr")
+              echo "$sc" | grep -q '"allowPrivilegeEscalation":false'
+              echo "$sc" | grep -q '"drop":\["ALL"\]'
+              seccomp=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.securityContext.seccompProfile.type}')
+              test "$seccomp" = RuntimeDefault
+              # EB-5: extraEnv reaches the container.
+              envs=$(kubectl get pods -n "$NAMESPACE" -l control-plane=controller-manager -o jsonpath='{.items[0].spec.containers[0].env[?(@.name=="NO_PROXY")].value}')
+              test "$envs" = ".svc,.cluster.local"
         - assert:
             resource:
               apiVersion: coordination.k8s.io/v1
@@ -149,3 +163,550 @@ spec:
       cleanup:
         - script:
             content: kubectl delete clusterrolebinding "e2e-metrics-${NAMESPACE}" --ignore-not-found
+
+    # What follows runs the claims against a real RustFS in the test namespace
+    # (Pod Security `restricted`, so a non-root rustfs with a certificate that
+    # cert-manager issues for the Service name; the stores verify it). The
+    # `s3c` pod is a curl client with the CA mounted: `s3req` sends a SigV4
+    # request with the admin credentials, or with AK and SK when they are set,
+    # and prints the HTTP status and then the body. The helper snippets read
+    # bucket names from status.externalName.
+    - name: a TLS RustFS
+      try:
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: rustfs-admin
+              stringData:
+                accessKey: e2eadminaccess
+                secretKey: e2e-only-admin-secret-key
+        - apply:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: rustfs-selfsigned
+              spec:
+                selfSigned: {}
+        - apply:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: rustfs-ca
+              spec:
+                isCA: true
+                commonName: e2e rustfs CA
+                secretName: rustfs-ca
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                issuerRef:
+                  name: rustfs-selfsigned
+                  kind: Issuer
+        - apply:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: rustfs-ca
+              spec:
+                ca:
+                  secretName: rustfs-ca
+        - apply:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: rustfs-tls
+              spec:
+                secretName: rustfs-tls
+                privateKey:
+                  algorithm: ECDSA
+                  size: 256
+                  # RustFS reads PKCS#8 (as the openssl-made key of the integration lane is).
+                  encoding: PKCS8
+                usages: [digital signature, server auth]
+                dnsNames:
+                  - rustfs
+                  - (join('.', ['rustfs', $namespace, 'svc']))
+                  - (join('.', ['rustfs', $namespace, 'svc', 'cluster.local']))
+                issuerRef:
+                  name: rustfs-ca
+                  kind: Issuer
+        - assert:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: rustfs-tls
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: Service
+              metadata:
+                name: rustfs
+              spec:
+                selector:
+                  app: rustfs
+                ports:
+                  - name: s3
+                    port: 9000
+                    targetPort: s3
+        - apply:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: rustfs
+              spec:
+                replicas: 1
+                strategy:
+                  type: Recreate
+                selector:
+                  matchLabels:
+                    app: rustfs
+                template:
+                  metadata:
+                    labels:
+                      app: rustfs
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 10001
+                      runAsGroup: 10001
+                      fsGroup: 10001
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: rustfs
+                        # Same image as .github/workflows/integration.yml.
+                        image: rustfs/rustfs:1.0.0-rc.5-glibc@sha256:d14642b8ade7438d75543a357ef2c9dfa7ac06575995163fc692642a24816a51
+                        env:
+                          - name: RUSTFS_TLS_PATH
+                            value: /tls
+                          - name: RUSTFS_CONSOLE_ENABLE
+                            value: "false"
+                          - name: RUSTFS_ACCESS_KEY
+                            valueFrom:
+                              secretKeyRef: {name: rustfs-admin, key: accessKey}
+                          - name: RUSTFS_SECRET_KEY
+                            valueFrom:
+                              secretKeyRef: {name: rustfs-admin, key: secretKey}
+                        ports:
+                          - name: s3
+                            containerPort: 9000
+                        # HTTPS over the pod IP, like a client: the kubelet does not
+                        # verify the certificate, and nothing here uses a local socket.
+                        readinessProbe:
+                          httpGet:
+                            path: /health
+                            port: s3
+                            scheme: HTTPS
+                          periodSeconds: 3
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: [ALL]
+                        volumeMounts:
+                          - {name: data, mountPath: /data}
+                          - {name: logs, mountPath: /logs}
+                          - {name: tls, mountPath: /tls, readOnly: true}
+                    volumes:
+                      - name: data
+                        emptyDir: {}
+                      - name: logs
+                        emptyDir: {}
+                      - name: tls
+                        secret:
+                          secretName: rustfs-tls
+                          # The names RustFS loads from RUSTFS_TLS_PATH.
+                          items:
+                            - {key: tls.crt, path: rustfs_cert.pem}
+                            - {key: tls.key, path: rustfs_key.pem}
+                            - {key: ca.crt, path: ca.crt}
+        - assert:
+            timeout: 5m
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: rustfs
+              status:
+                availableReplicas: 1
+        - apply:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: s3c-bin
+              data:
+                s3req: |
+                  #!/bin/sh
+                  # s3req METHOD PATH [BODY]
+                  set -eu
+                  method=$1
+                  path=$2
+                  body=${3-}
+                  ak=${AK:-$ADMIN_AK}
+                  sk=${SK:-$ADMIN_SK}
+                  out=$(mktemp)
+                  hash=$(printf %s "$body" | sha256sum | cut -d ' ' -f1)
+                  if [ -n "$body" ]; then
+                    hex=$(printf %s "$body" | md5sum | cut -d ' ' -f1 | sed 's/../\\x&/g')
+                    md5=$(printf "$hex" | base64)
+                    code=$(curl -sS -o "$out" -w '%{http_code}' --cacert /ca/ca.crt \
+                      --aws-sigv4 aws:amz:us-east-1:s3 --user "$ak:$sk" \
+                      -H "x-amz-content-sha256: $hash" -H "Content-MD5: $md5" \
+                      -X "$method" --data-binary "$body" "$ENDPOINT$path")
+                  else
+                    code=$(curl -sS -o "$out" -w '%{http_code}' --cacert /ca/ca.crt \
+                      --aws-sigv4 aws:amz:us-east-1:s3 --user "$ak:$sk" \
+                      -H "x-amz-content-sha256: $hash" -X "$method" "$ENDPOINT$path")
+                  fi
+                  echo "$code"
+                  cat "$out"
+                  rm -f "$out"
+        - apply:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: s3c
+              spec:
+                replicas: 1
+                selector:
+                  matchLabels:
+                    app: s3c
+                template:
+                  metadata:
+                    labels:
+                      app: s3c
+                  spec:
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 100
+                      runAsGroup: 101
+                      seccompProfile:
+                        type: RuntimeDefault
+                    containers:
+                      - name: curl
+                        # Same image as the metrics step.
+                        image: curlimages/curl@sha256:935d9100e9ba842cdb060de42472c7ca90cfe9a7c96e4dacb55e79e560b3ff40
+                        command: [sh, -c, sleep 86400]
+                        env:
+                          - name: ENDPOINT
+                            value: (join('', ['https://rustfs.', $namespace, '.svc:9000']))
+                          - name: ADMIN_AK
+                            valueFrom:
+                              secretKeyRef: {name: rustfs-admin, key: accessKey}
+                          - name: ADMIN_SK
+                            valueFrom:
+                              secretKeyRef: {name: rustfs-admin, key: secretKey}
+                        securityContext:
+                          allowPrivilegeEscalation: false
+                          capabilities:
+                            drop: [ALL]
+                        volumeMounts:
+                          - {name: ca, mountPath: /ca, readOnly: true}
+                          - {name: bin, mountPath: /s3, readOnly: true}
+                    volumes:
+                      - name: ca
+                        secret:
+                          secretName: rustfs-tls
+                          items:
+                            - {key: ca.crt, path: ca.crt}
+                      - name: bin
+                        configMap:
+                          name: s3c-bin
+                          # 0555 (decimal: YAML 1.2 reads 0555 as 555).
+                          defaultMode: 365
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: s3c
+              status:
+                availableReplicas: 1
+
+    - name: the stores are admitted
+      try:
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ClusterObjectStore
+              metadata:
+                name: e2e-s3
+              spec:
+                endpoint: (join('', ['https://rustfs.', $namespace, '.svc:9000']))
+                tls:
+                  caBundle:
+                    secretRef: {name: rustfs-tls}
+                adminCredentialsSecretRef:
+                  name: rustfs-admin
+                  namespace: ($namespace)
+                allowedNamespaces:
+                  from: All
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ObjectStore
+              metadata:
+                name: team-s3
+              spec:
+                endpoint: (join('', ['https://rustfs.', $namespace, '.svc:9000']))
+                tls:
+                  caBundle:
+                    secretRef: {name: rustfs-tls}
+                adminCredentialsSecretRef:
+                  name: rustfs-admin
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ClusterObjectStore
+              metadata:
+                name: e2e-s3
+              spec:
+                region: us-east-1
+                pathStyle: true
+                backend: RustFS
+
+    - name: Bucket and BucketAccess are created and become ready
+      try:
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: orders
+              spec:
+                serverRef: {kind: ClusterObjectStore, name: e2e-s3}
+                deletionPolicy: Delete
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: orders
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+                (conditions[?type == 'Synced'] | [0].status): "True"
+                # The pinned default; spec.deletionPolicy (Delete) wins at deletion.
+                effectiveDeletionPolicy: Retain
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: BucketAccess
+              metadata:
+                name: orders-rw
+              spec:
+                serverRef: {kind: ClusterObjectStore, name: e2e-s3}
+                bucketRef: {name: orders}
+                access: ReadWrite
+                binding: {secretName: orders-s3}
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: BucketAccess
+              metadata:
+                name: orders-rw
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+                binding:
+                  name: orders-s3
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: orders-s3
+              type: servicebinding.io/s3
+        - script:
+            timeout: 2m
+            content: |
+              set -eu
+              s3() { kubectl exec -n "$NAMESPACE" deploy/s3c -- "$@"; }
+              b=$(kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
+              test -n "$b"
+              # The bucket exists and carries the claim's marker.
+              out=$(s3 /s3/s3req GET "/$b")
+              test "$(printf %s "$out" | head -n 1)" = 200
+              out=$(s3 /s3/s3req GET "/$b?tagging")
+              printf %s "$out" | grep -q 'craftainer.dev/claim'
+              # The binding names the bucket and the store's endpoint and CA.
+              field() { kubectl get secret orders-s3 -n "$NAMESPACE" -o "jsonpath={.data.$1}" | base64 -d; }
+              test "$(field bucket)" = "$b"
+              test "$(field endpoint)" = "https://rustfs.${NAMESPACE}.svc:9000"
+              test -n "$(field sslrootcert)"
+              ak=$(field accessKeyId)
+              sk=$(field secretAccessKey)
+              test -n "$ak" -a -n "$sk"
+              # The binding works against the real store over TLS: the object
+              # round-trips, and another bucket is refused.
+              bs() { s3 env AK="$ak" SK="$sk" /s3/s3req "$@"; }
+              out=$(bs PUT "/$b/hello.txt" 'hello from e2e')
+              test "$(printf %s "$out" | head -n 1)" = 200
+              out=$(bs GET "/$b/hello.txt")
+              test "$(printf %s "$out" | head -n 1)" = 200
+              printf %s "$out" | grep -q 'hello from e2e'
+              out=$(bs GET "/$b-other/hello.txt")
+              code=$(printf %s "$out" | head -n 1)
+              test "$code" = 403 -o "$code" = 404
+              # The admin credentials are not the binding's.
+              test "$(field accessKeyId)" != e2eadminaccess
+
+    - name: a Bucket on an ObjectStore takes the operator's default deletionPolicy
+      try:
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: kept
+              spec:
+                serverRef: {kind: ObjectStore, name: team-s3}
+                versioning: true
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: kept
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+                effectiveDeletionPolicy: Retain
+                deletionPolicySource: OperatorDefault
+        - script:
+            content: |
+              set -eu
+              b=$(kubectl get bucket kept -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req GET "/$b?versioning")
+              printf %s "$out" | grep -q 'Enabled'
+              # The binding of `orders` has no access to this bucket.
+              ak=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.accessKeyId}' | base64 -d)
+              sk=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.secretAccessKey}' | base64 -d)
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b/hello.txt")
+              code=$(printf %s "$out" | head -n 1)
+              test "$code" = 403
+
+    - name: deleting a BucketAccess removes its key and its Secret
+      try:
+        - script:
+            content: |
+              set -eu
+              b=$(kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
+              ak=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.accessKeyId}' | base64 -d)
+              sk=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.secretAccessKey}' | base64 -d)
+              echo "$ak" > "${TMPDIR:-/tmp}/e2e-ak-$NAMESPACE"
+              echo "$sk" > "${TMPDIR:-/tmp}/e2e-sk-$NAMESPACE"
+              # The operator never deletes objects: empty the bucket (no
+              # versioning here, so nothing is left behind) for the Delete below.
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req DELETE "/$b/hello.txt")
+              test "$(printf %s "$out" | head -n 1)" = 204
+        - delete:
+            ref:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: BucketAccess
+              name: orders-rw
+        - error:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: orders-s3
+        - script:
+            content: |
+              set -eu
+              b=$(kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
+              ak=$(cat "${TMPDIR:-/tmp}/e2e-ak-$NAMESPACE")
+              sk=$(cat "${TMPDIR:-/tmp}/e2e-sk-$NAMESPACE")
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b")
+              code=$(printf %s "$out" | head -n 1)
+              # The key is gone from the store; the bucket is still there.
+              test "$code" = 403
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req GET "/$b")
+              test "$(printf %s "$out" | head -n 1)" = 200
+
+    - name: deleting a Bucket follows deletionPolicy
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}' > "${TMPDIR:-/tmp}/e2e-bucket-delete-$NAMESPACE"
+              kubectl get bucket kept -n "$NAMESPACE" -o jsonpath='{.status.externalName}' > "${TMPDIR:-/tmp}/e2e-bucket-retain-$NAMESPACE"
+        - delete:
+            ref:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              name: orders
+        - delete:
+            ref:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              name: kept
+        - script:
+            content: |
+              set -eu
+              s3() { kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req "$@"; }
+              gone=$(cat "${TMPDIR:-/tmp}/e2e-bucket-delete-$NAMESPACE")
+              kept=$(cat "${TMPDIR:-/tmp}/e2e-bucket-retain-$NAMESPACE")
+              test -n "$gone" -a -n "$kept"
+              # Delete: the bucket is removed. Retain: it stays.
+              out=$(s3 GET "/$gone")
+              test "$(printf %s "$out" | head -n 1)" = 404
+              out=$(s3 GET "/$kept")
+              test "$(printf %s "$out" | head -n 1)" = 200
+              out=$(s3 DELETE "/$kept")
+              test "$(printf %s "$out" | head -n 1)" = 204
+
+    - name: a foreign Bucket is skipped on delete and the finalizer is released
+      try:
+        - apply:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: foreign
+              spec:
+                serverRef: {kind: ClusterObjectStore, name: e2e-s3}
+                deletionPolicy: Delete
+        - assert:
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              metadata:
+                name: foreign
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+        - script:
+            content: |
+              set -eu
+              b=$(kubectl get bucket foreign -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
+              echo "$b" > "${TMPDIR:-/tmp}/e2e-bucket-foreign-$NAMESPACE"
+              # Hand the bucket to another claim.
+              tag='<Tagging><TagSet><Tag><Key>craftainer.dev/claim</Key><Value>other/other/00000000-0000-0000-0000-000000000000</Value></Tag></TagSet></Tagging>'
+              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req PUT "/$b?tagging" "$tag")
+              test "$(printf %s "$out" | head -n 1)" = 200
+        - delete:
+            ref:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: Bucket
+              name: foreign
+        - script:
+            content: |
+              set -eu
+              s3() { kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req "$@"; }
+              b=$(cat "${TMPDIR:-/tmp}/e2e-bucket-foreign-$NAMESPACE")
+              # Whatever the deletionPolicy, the foreign bucket stays, still tagged.
+              out=$(s3 GET "/$b")
+              test "$(printf %s "$out" | head -n 1)" = 200
+              out=$(s3 GET "/$b?tagging")
+              printf %s "$out" | grep -q 'other/other/00000000-0000-0000-0000-000000000000'
+              out=$(s3 DELETE "/$b")
+              test "$(printf %s "$out" | head -n 1)" = 204

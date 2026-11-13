@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "operator-s3 chart values",
+  "description": "Only the values whose wrong spelling would make the manager exit at startup or the pod unschedulable are checked; every other value is open.",
+  "type": "object",
+  "properties": {
+    "egressMode": {
+      "description": "The manager's EGRESS_MODE (egress.ParseMode).",
+      "type": "string",
+      "enum": ["strict", "allow-private"]
+    },
+    "defaultDataDeletionPolicy": {
+      "description": "The manager's DEFAULT_DATA_DELETION_POLICY (lifecycle.ParseDefaultDeletionPolicy).",
+      "type": "string",
+      "enum": ["Retain", "Delete"]
+    },
+    "global": {
+      "type": "object",
+      "properties": {
+        "imageRegistry": {
+          "description": "Registry host (and optional path prefix) the manager image is pulled from, for a mirror or an air-gapped cluster (EB-5).",
+          "type": "string"
+        }
+      }
+    },
+    "manager": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "digest": {
+              "description": "The image digest, sha256:<64 hex>; wins over tag (EB-5).",
+              "type": "string",
+              "pattern": "^(sha256:[0-9a-f]{64})?$"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"]
+            }
+          }
+        },
+        "extraEnv": {
+          "description": "Extra environment variables of the manager container (EB-5: proxy and CA settings).",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "description": "Not one of the variables the chart sets itself: a duplicate name would override it.",
+                "type": "string",
+                "not": {"enum": ["POD_NAMESPACE", "EGRESS_MODE", "DEFAULT_DATA_DELETION_POLICY"]}
+              }
+            }
+          }
+        },
+        "podSecurityContext": {
+          "description": "Pod Security restricted (EB-10) needs runAsNonRoot and a seccomp profile; the defaults set both.",
+          "type": "object"
+        },
+        "securityContext": {
+          "description": "Pod Security restricted (EB-10): no privilege escalation, all capabilities dropped; the defaults also make the root filesystem read-only.",
+          "type": "object"
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
