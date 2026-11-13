@@ -603,6 +603,7 @@ spec:
               b=$(kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
               ak=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.accessKeyId}' | base64 -d)
               sk=$(kubectl get secret orders-s3 -n "$NAMESPACE" -o jsonpath='{.data.secretAccessKey}' | base64 -d)
+              umask 077
               echo "$ak" > "${TMPDIR:-/tmp}/e2e-ak-$NAMESPACE"
               echo "$sk" > "${TMPDIR:-/tmp}/e2e-sk-$NAMESPACE"
               # The operator never deletes objects: empty the bucket (no
@@ -621,15 +622,26 @@ spec:
               metadata:
                 name: orders-s3
         - script:
+            timeout: 2m
             content: |
               set -eu
               b=$(kubectl get bucket orders -n "$NAMESPACE" -o jsonpath='{.status.externalName}')
               ak=$(cat "${TMPDIR:-/tmp}/e2e-ak-$NAMESPACE")
               sk=$(cat "${TMPDIR:-/tmp}/e2e-sk-$NAMESPACE")
-              out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b")
-              code=$(printf %s "$out" | head -n 1)
-              # The key is gone from the store; the bucket is still there.
-              test "$code" = 403
+              # The key is gone from the store. RustFS may take a moment to
+              # drop it from its IAM cache, so retry until 403 or the deadline.
+              deadline=$(( $(date +%s) + 90 ))
+              while :; do
+                out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b")
+                code=$(printf %s "$out" | head -n 1)
+                test "$code" = 403 && break
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "the deleted key still gets HTTP $code, not 403"
+                  exit 1
+                fi
+                sleep 3
+              done
+              # The bucket is still there.
               out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- /s3/s3req GET "/$b")
               test "$(printf %s "$out" | head -n 1)" = 200
 

@@ -7,7 +7,7 @@
     "egressMode": {
       "description": "The manager's EGRESS_MODE (egress.ParseMode).",
       "type": "string",
-      "enum": ["strict", "allow-private"]
+      "enum": ["", "strict", "allow-private"]
     },
     "defaultDataDeletionPolicy": {
       "description": "The manager's DEFAULT_DATA_DELETION_POLICY (lifecycle.ParseDefaultDeletionPolicy).",
