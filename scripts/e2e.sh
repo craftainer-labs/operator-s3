@@ -64,6 +64,30 @@ curl -LsSf --retry 3 --retry-all-errors -o "$manifest" \
 echo "${CERT_MANAGER_SHA256}  ${manifest}" | sha256sum -c -
 kubectl apply -f "$manifest"
 kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=300s
+# Available does not mean the webhook answers: its Service endpoint and the
+# injected CA bundle can lag, and the chart's Issuer then fails with
+# "connection refused". Wait until the webhook admits an Issuer and a
+# Certificate (a server-side dry run creates nothing), for at most 3 minutes.
+probe="${workdir}/webhook-ready.yaml"
+cat >"$probe" <<'YAML'
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata: {name: webhook-ready, namespace: cert-manager}
+spec: {selfSigned: {}}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: webhook-ready, namespace: cert-manager}
+spec: {secretName: webhook-ready, dnsNames: [webhook-ready.invalid], issuerRef: {name: webhook-ready}}
+YAML
+deadline=$((SECONDS + 180))
+until out="$(kubectl apply --dry-run=server --request-timeout=15s -f "$probe" 2>&1)"; do
+    if ((SECONDS >= deadline)); then
+        echo "e2e: the cert-manager webhook did not become ready: ${out}" >&2
+        exit 1
+    fi
+    sleep 5
+done
 
 # The chart's image: the local one, loaded into the node, never pulled.
 image_repository="${img%:*}"

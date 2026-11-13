@@ -20,6 +20,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -36,6 +37,7 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
 	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
+	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
@@ -222,8 +224,11 @@ func (s *settings) managerOptions(opts []Option) ctrl.Options {
 		// Lease on cancel is safe and makes a rollout faster.
 		LeaderElectionReleaseOnCancel: true,
 		// The Secret cache holds only the binding Secrets the operator owns
-		// (EB-2); the admin Secrets and CA bundles of stores are read live.
-		Cache: cache.Options{ByObject: binding.CacheByObject(EventRecorderName)},
+		// (EB-2), and the ConfigMap cache (the probes' watches) only the
+		// ConfigMaps with the same label, so the operator never lists or
+		// watches the cluster's other ones; the admin Secrets and CA bundles
+		// of stores are read live.
+		Cache: cache.Options{ByObject: cacheByObject()},
 		Client: client.Options{Cache: &client.CacheOptions{
 			DisableFor: []client.Object{&corev1.Secret{}, &corev1.ConfigMap{}},
 		}},
@@ -301,14 +306,17 @@ type setupStep struct {
 // only a Role in the operator namespace) and the binding Secrets are written;
 // the manager's cache of Secrets is restricted to its managed-by label
 // (binding.CacheByObject), and reads of unlabelled Secrets go to the API
-// server. ConfigMaps: CA bundles only. Events: the Event recorder.
+// server. The store probes (probe.Reconciler) also watch Secrets and
+// ConfigMaps, so those need list and watch too (the ConfigMap cache is
+// restricted to the managed-by label like the Secret cache). ConfigMaps: CA
+// bundles only. Events: the Event recorder.
 //
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores;objectstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets;bucketaccesses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores/status;objectstores/status;buckets/status;bucketaccesses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets/finalizers;bucketaccesses/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core;events.k8s.io,resources=events,verbs=create;patch
 
@@ -340,9 +348,35 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	}
 	steps = append(steps,
 		setupStep{"Bucket controller", (&controller.BucketReconciler{Config: cfg}).SetupWithManager},
-		setupStep{"BucketAccess controller", (&controller.AccessReconciler{Config: cfg}).SetupWithManager})
+		setupStep{"BucketAccess controller", (&controller.AccessReconciler{Config: cfg}).SetupWithManager},
+		setupStep{"ClusterObjectStore probe", storeProbe(mgr, cfg, cs.namespace,
+			func() probe.Server { return &s3v1alpha1.ClusterObjectStore{} })},
+		setupStep{"ObjectStore probe", storeProbe(mgr, cfg, cs.namespace,
+			func() probe.Server { return &s3v1alpha1.ObjectStore{} })})
 	// +kubebuilder:scaffold:builder
 	return runSteps(mgr, steps)
+}
+
+// cacheByObject restricts the Secret and the ConfigMap cache to the objects
+// that carry the operator's managed-by label.
+func cacheByObject() map[client.Object]cache.ByObject {
+	byObject := binding.CacheByObject(EventRecorderName)
+	byObject[&corev1.ConfigMap{}] = cache.ByObject{
+		Label: labels.SelectorFromSet(labels.Set{binding.LabelManagedBy: EventRecorderName}),
+	}
+	return byObject
+}
+
+// storeProbe returns the setup of the probe.Reconciler of one store kind,
+// which writes the kind's status (serverVersion, lastProbeTime, Ready and
+// ServerReachable) from a RustFS admin probe. Its Client reads Secrets and
+// ConfigMaps live (managerOptions), and its watches on them go through the
+// manager's caches, which hold only the managed-by labelled ones.
+func storeProbe(mgr ctrl.Manager, cfg controller.Config, operatorNS string, kind func() probe.Server) func(ctrl.Manager) error {
+	return (&probe.Reconciler{
+		Client: mgr.GetClient(), New: kind, Prober: controller.Prober{Config: cfg},
+		Options: probe.Options{OperatorNamespace: operatorNS},
+	}).SetupWithManager
 }
 
 func runSteps(mgr ctrl.Manager, steps []setupStep) error {

@@ -256,6 +256,13 @@ func (m *memStore) DeleteAccess(_ context.Context, user string, keys []string) e
 	return nil
 }
 
+func (m *memStore) ServerVersion(context.Context) (string, error) {
+	if err := m.enter("ServerVersion"); err != nil {
+		return "", err
+	}
+	return "1.0.0-test", nil
+}
+
 // harness is one test's namespaces, store, recorder and in-memory RustFS.
 type harness struct {
 	t      *testing.T
