@@ -14,6 +14,14 @@ mkdir -p "$dir"
 cd "$dir"
 umask 077
 
+# Keep what is there while it stays valid: a running RustFS has loaded it, and
+# new files under it would make the clients and the server disagree.
+if [ -s ca.crt ] && [ -s rustfs_cert.pem ] && [ -s rustfs_key.pem ] &&
+    [ -s admin-access-key ] && [ -s admin-secret-key ] &&
+    openssl x509 -in rustfs_cert.pem -noout -checkend 3600 >/dev/null 2>&1; then
+    exit 0
+fi
+
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 \
     -keyout ca.key -out ca.crt -subj "/CN=operator-s3 integration CA" \
     -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"

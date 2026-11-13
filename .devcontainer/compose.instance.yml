@@ -25,8 +25,9 @@ services:
         condition: service_healthy
 
   # Generates the CA, the server certificate (names: rustfs, localhost,
-  # 127.0.0.1) and the admin credentials into the rustfs-tls volume, on every
-  # start.
+  # 127.0.0.1) and the admin credentials into the rustfs-tls volume, once: a
+  # start keeps them while they stay valid, because a running rustfs has loaded
+  # them.
   rustfs-tls-init:
     # renovate: datasource=docker depName=alpine/openssl
     image: alpine/openssl:3.5.9@sha256:6821afa2476e11be343f29275f2ca24291720ff0a7148bd131fd8e314ff26d9e

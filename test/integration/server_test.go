@@ -211,15 +211,26 @@ func (s server) send(t *testing.T, access, secret, method, path string, query ur
 // ready makes the first test wait until the server answers an authenticated
 // admin request: it listens before its IAM is loaded, and answers 500 until
 // then.
-var ready sync.Once
+var (
+	readyMu sync.Mutex
+	ready   bool
+)
 
 func (s server) waitReady(t *testing.T) {
 	t.Helper()
-	ready.Do(func() {
+	readyMu.Lock()
+	defer readyMu.Unlock()
+	// Only a success is remembered: a test that gives up leaves the wait to the
+	// next one.
+	if ready {
+		return
+	}
+	func() {
 		deadline := time.Now().Add(2 * time.Minute)
 		for {
 			status, body, err := s.send(t, s.access, s.secret, http.MethodGet, "/list-canned-policies", nil, nil)
 			if err == nil && status == http.StatusOK {
+				ready = true
 				return
 			}
 			if time.Now().After(deadline) {
@@ -227,7 +238,7 @@ func (s server) waitReady(t *testing.T) {
 			}
 			time.Sleep(time.Second)
 		}
-	})
+	}()
 }
 
 // unique is a name no other test run uses, in the shape of a lower-case
