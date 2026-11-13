@@ -20,10 +20,10 @@ func validateStore(spec *s3v1alpha1.ObjectStoreConfig, proxyURL string) field.Er
 	var errs field.ErrorList
 	path := field.NewPath("spec")
 	if !validURL(spec.Endpoint, "https") {
-		errs = append(errs, field.Invalid(path.Child("endpoint"), redacted, "must be an https URL with a host"))
+		errs = append(errs, field.Invalid(path.Child("endpoint"), redacted, "must be an https URL with a host and without user:password@"))
 	}
 	if proxyURL != "" && !validURL(proxyURL, "http", "https", "socks5") {
-		errs = append(errs, field.Invalid(path.Child("proxyURL"), redacted, "must be an http, https or socks5 URL with a host"))
+		errs = append(errs, field.Invalid(path.Child("proxyURL"), redacted, "must be an http, https or socks5 URL with a host and without user:password@"))
 	}
 	return errs
 }

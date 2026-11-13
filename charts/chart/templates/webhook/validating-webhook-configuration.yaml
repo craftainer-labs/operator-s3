@@ -34,6 +34,26 @@ webhooks:
     service:
       name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
       namespace: {{ .Release.Namespace }}
+      path: /validate-s3-craftainer-dev-v1alpha1-bucketaccess
+  failurePolicy: Fail
+  name: vbucketaccess-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - s3.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bucketaccesses
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: {{ include "operator-s3.resourceName" (dict "suffix" "webhook-service" "context" $) }}
+      namespace: {{ .Release.Namespace }}
       path: /validate-s3-craftainer-dev-v1alpha1-clusterobjectstore
   failurePolicy: Fail
   name: vclusterobjectstore-v1alpha1.kb.io

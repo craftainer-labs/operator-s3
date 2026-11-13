@@ -99,6 +99,15 @@ spec:
         command:
         - /manager
         image: "{{ include "operator-s3.image" . }}"
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: EGRESS_MODE
+          value: {{ .Values.egressMode | quote }}
+        - name: DEFAULT_DATA_DELETION_POLICY
+          value: {{ .Values.defaultDataDeletionPolicy | quote }}
         {{- with .Values.manager.image.pullPolicy }}
         imagePullPolicy: {{ . }}
         {{- end }}

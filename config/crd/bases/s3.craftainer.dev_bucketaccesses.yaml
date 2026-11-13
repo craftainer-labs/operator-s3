@@ -127,6 +127,8 @@ spec:
                 x-kubernetes-validations:
                 - message: prefix must not start with /
                   rule: '!self.startsWith(''/'')'
+                - message: prefix must not contain *, ? or $
+                  rule: '!self.matches(''[*?$]'')'
               rotationPolicy:
                 description: RotationPolicy turns on credential rotation.
                 properties:

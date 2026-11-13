@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -46,10 +48,14 @@ type BucketAccessSpec struct {
 	// +optional
 	Access AccessLevel `json:"access,omitempty"`
 
+	// The second XValidation rule below is PrefixOK in CEL: change both
+	// together, and the webhook and the controller follow PrefixOK.
+
 	// prefix restricts the key to the object keys under it, without a leading
 	// slash. Empty means the whole bucket.
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="!self.startsWith('/')",message="prefix must not start with /"
+	// +kubebuilder:validation:XValidation:rule="!self.matches('[*?$]')",message="prefix must not contain *, ? or $"
 	// +optional
 	Prefix string `json:"prefix,omitempty"`
 }
@@ -169,3 +175,8 @@ func init() {
 		return nil
 	})
 }
+
+// PrefixOK reports whether an access prefix is a plain key prefix: no
+// wildcard (*, ?) or policy variable ($) could widen the IAM policy built
+// from it. The CRD, the webhook and the controller all apply this one rule.
+func PrefixOK(prefix string) bool { return !strings.ContainsAny(prefix, "*?$") }
