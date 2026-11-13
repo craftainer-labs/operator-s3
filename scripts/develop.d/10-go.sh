@@ -9,7 +9,7 @@
 set -euo pipefail
 
 # renovate: datasource=golang-version depName=go
-GO_VERSION=1.27.3
+GO_VERSION=1.27.4
 # renovate: datasource=github-releases depName=golangci/golangci-lint
 GOLANGCI_LINT_VERSION=2.15.0
 # renovate: datasource=go depName=golang.org/x/vuln
