@@ -25,9 +25,10 @@ func invalid(kind, name string, errs field.ErrorList) error {
 	return apierrors.NewInvalid(schema.GroupKind{Group: s3v1alpha1.GroupVersion.Group, Kind: kind}, name, errs)
 }
 
-// validURL reports whether raw parses as a URL with one of the schemes and a
-// host.
+// validURL reports whether raw parses as a URL with one of the schemes, a host
+// and no userinfo (user decision 1, 2026-11-03: credentials come only from
+// Secret references, never from a plain spec field).
 func validURL(raw string, schemes ...string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && slices.Contains(schemes, u.Scheme) && u.Hostname() != ""
+	return err == nil && slices.Contains(schemes, u.Scheme) && u.Hostname() != "" && u.User == nil
 }

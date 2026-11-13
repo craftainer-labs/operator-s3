@@ -57,6 +57,10 @@ var storeCases = []struct {
 	{name: "malformed endpoint", endpoint: "https://[::1", field: "spec.endpoint"},
 	{name: "proxy with another scheme", endpoint: "https://rustfs:9000", proxy: "ftp://proxy", field: "spec.proxyURL"},
 	{name: "proxy without a host", endpoint: "https://rustfs:9000", proxy: "http://", field: "spec.proxyURL"},
+	{name: "endpoint with userinfo", endpoint: "https://user:s3cret@rustfs:9000", field: "spec.endpoint"},
+	{name: "endpoint with a user only", endpoint: "https://user@rustfs:9000", field: "spec.endpoint"},
+	{name: "proxy with userinfo", endpoint: "https://rustfs:9000", proxy: "http://user:s3cret@proxy:3128", field: "spec.proxyURL"},
+	{name: "socks5 proxy with a password", endpoint: "https://rustfs:9000", proxy: "socks5://:s3cret@proxy:1080", field: "spec.proxyURL"},
 }
 
 func expectField(g *WithT, err error, field string) {

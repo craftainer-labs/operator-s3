@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,8 +24,13 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+
+	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+
+	"github.com/craftainer-labs/operator-s3/internal/egress"
 )
 
 // These tests run the real manager against envtest's kube-apiserver. They need
@@ -50,6 +56,13 @@ func TestMain(m *testing.M) {
 		code = 1
 	}
 	os.Exit(code)
+}
+
+// skipNameValidation lets several managers register the same controller name
+// in one test process (controller-runtime otherwise rejects the second).
+func skipNameValidation(o *ctrl.Options) {
+	skip := true
+	o.Controller = config.Controller{SkipNameValidation: &skip}
 }
 
 func freeAddr(t *testing.T) string {
@@ -196,7 +209,7 @@ func TestRunReportsAStartError(t *testing.T) {
 		"--health-probe-bind-address=0", "--metrics-bind-address=0",
 		"--webhook-port=" + portOf(freeAddr(t)), "--webhook-cert-path=" + t.TempDir(),
 	}
-	err := Run(context.Background(), args, getConfig, io.Discard)
+	err := Run(context.Background(), args, getConfig, io.Discard, skipNameValidation)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("run the manager"))
 }
@@ -219,7 +232,7 @@ func TestRunServesSecuredMetricsAndWebhooks(t *testing.T) {
 		"--webhook-port=" + portOf(hook), "--webhook-cert-path=" + certs,
 		"--leader-elect", "--leader-election-namespace=default",
 		"--enable-http2", "--zap-devel",
-	})
+	}, skipNameValidation)
 	defer func() { _ = stop() }()
 
 	waitForOK(t, "http://"+probe+"/healthz")
@@ -244,6 +257,7 @@ func TestRunWithPlainMetricsAndNoWebhooks(t *testing.T) {
 	probe, metrics := freeAddr(t), freeAddr(t)
 	// An Option adjusts the manager's options before it is created.
 	shortShutdown := func(o *ctrl.Options) {
+		skipNameValidation(o)
 		d := 5 * time.Second
 		o.GracefulShutdownTimeout = &d
 	}
@@ -263,7 +277,7 @@ func TestRunReportsASetupError(t *testing.T) {
 	g := NewWithT(t)
 	boom := errors.New("boom")
 	orig := setupManager
-	setupManager = func(ctrl.Manager, bool) error { return boom }
+	setupManager = func(ctrl.Manager, bool, controllerSettings) error { return boom }
 	defer func() { setupManager = orig }()
 
 	err := Run(context.Background(), []string{"--health-probe-bind-address=0", "--metrics-bind-address=0", "--webhook-port=-1"}, getConfig, io.Discard)
@@ -299,4 +313,61 @@ func TestAddChecks(t *testing.T) {
 	g.Expect(addChecks(fakeChecks{})).To(Succeed())
 	g.Expect(addChecks(fakeChecks{healthzErr: boom})).To(MatchError(boom))
 	g.Expect(addChecks(fakeChecks{readyzErr: boom})).To(MatchError(boom))
+}
+
+func TestControllerSettings(t *testing.T) {
+	g := NewWithT(t)
+	t.Setenv("EGRESS_MODE", "")
+	t.Setenv("DEFAULT_DATA_DELETION_POLICY", "")
+	t.Setenv("POD_NAMESPACE", "")
+	old := serviceAccountNamespaceFile
+	t.Cleanup(func() { serviceAccountNamespaceFile = old })
+
+	// Defaults: strict egress, Retain, and no namespace without a service account.
+	serviceAccountNamespaceFile = filepath.Join(t.TempDir(), "missing")
+	s, err := parseFlags(nil, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	cs, err := s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.deletion).To(Equal(common.DeletionRetain))
+	g.Expect(cs.namespace).To(BeEmpty())
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+
+	// The pod's namespace comes from the service account.
+	nsFile := filepath.Join(t.TempDir(), "namespace")
+	g.Expect(os.WriteFile(nsFile, []byte("operator-ns\n"), 0o600)).To(Succeed())
+	serviceAccountNamespaceFile = nsFile
+	cs, err = s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.namespace).To(Equal("operator-ns"))
+
+	// The environment supplies the flag defaults; a flag wins.
+	t.Setenv("EGRESS_MODE", "allow-private")
+	t.Setenv("DEFAULT_DATA_DELETION_POLICY", "Delete")
+	t.Setenv("POD_NAMESPACE", "from-env")
+	s, err = parseFlags(nil, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	cs, err = s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.deletion).To(Equal(common.DeletionDelete))
+	g.Expect(cs.namespace).To(Equal("from-env"))
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(Succeed())
+	g.Expect(cs.egress.Check(netip.MustParseAddr("127.0.0.1"))).To(MatchError(egress.ErrBlocked))
+	s, err = parseFlags([]string{"--egress-mode=strict", "--operator-namespace=flag-ns"}, io.Discard)
+	g.Expect(err).NotTo(HaveOccurred())
+	cs, err = s.controllerSettings()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cs.namespace).To(Equal("flag-ns"))
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+}
+
+// An invalid setting fails startup before the operator contacts a cluster.
+func TestRunRejectsInvalidSettings(t *testing.T) {
+	g := NewWithT(t)
+	noCluster := func() (*rest.Config, error) { panic("the cluster was contacted") }
+	err := Run(context.Background(), []string{"--egress-mode=off"}, noCluster, io.Discard)
+	g.Expect(err).To(MatchError(egress.ErrInvalidMode))
+	err = Run(context.Background(), []string{"--default-data-deletion-policy=Maybe"}, noCluster, io.Discard)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("DEFAULT_DATA_DELETION_POLICY"))
 }

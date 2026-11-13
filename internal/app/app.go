@@ -12,24 +12,35 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (OIDC, exec, ...) so the
 	// manager can use any kubeconfig outside a cluster.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
+	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
+	"github.com/craftainer-labs/lib-operator-go/pkg/server"
+
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
+	"github.com/craftainer-labs/operator-s3/internal/controller"
+	"github.com/craftainer-labs/operator-s3/internal/egress"
 	webhookv1alpha1 "github.com/craftainer-labs/operator-s3/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
@@ -67,6 +78,9 @@ type settings struct {
 	webhookCertName  string
 	webhookCertKey   string
 	enableHTTP2      bool
+	egressMode       string
+	deletionPolicy   string
+	operatorNS       string
 	zap              zap.Options
 }
 
@@ -94,6 +108,15 @@ func parseFlags(args []string, stderr io.Writer) (*settings, error) {
 	fs.StringVar(&s.webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
 	fs.StringVar(&s.webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	fs.BoolVar(&s.enableHTTP2, "enable-http2", false, "Enable HTTP/2 on the metrics and webhook servers.")
+	fs.StringVar(&s.egressMode, "egress-mode", os.Getenv(egress.EnvMode),
+		"Which destinations the object store connections may not reach: strict (loopback, link-local, cloud metadata and private ranges) "+
+			"or allow-private (all but the private ranges). Empty means strict. Default: $"+egress.EnvMode+".")
+	fs.StringVar(&s.deletionPolicy, "default-data-deletion-policy", os.Getenv(lifecycle.EnvDefaultDataDeletionPolicy),
+		"The deletionPolicy a new Bucket gets pinned to when its spec leaves it unset: Retain (the default) or Delete. Default: $"+
+			lifecycle.EnvDefaultDataDeletionPolicy+".")
+	fs.StringVar(&s.operatorNS, "operator-namespace", os.Getenv(server.OperatorNamespaceEnv),
+		"The namespace cluster stores' admin Secrets and CA bundles are read from. Empty: the pod's namespace (needs the service account). Default: $"+
+			server.OperatorNamespaceEnv+".")
 	s.zap.BindFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -140,6 +163,40 @@ func (s *settings) webhookServer() webhook.Server {
 	return webhook.NewServer(opts)
 }
 
+// serviceAccountNamespaceFile holds the pod's namespace; a variable so a test
+// can point it elsewhere.
+var serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// controllerSettings are the flags the controllers need, validated.
+type controllerSettings struct {
+	egress    egress.Policy
+	deletion  common.DeletionPolicy
+	namespace string
+}
+
+// controllerSettings validates the egress mode and the default deletion policy
+// (an invalid value fails startup, so the operator never runs with a setting
+// nobody chose) and finds the operator namespace.
+func (s *settings) controllerSettings() (controllerSettings, error) {
+	mode, err := egress.ParseMode(s.egressMode)
+	if err != nil {
+		return controllerSettings{}, fmt.Errorf("%s: %w", egress.EnvMode, err)
+	}
+	policy, err := lifecycle.ParseDefaultDeletionPolicy(s.deletionPolicy)
+	if err != nil {
+		return controllerSettings{}, err
+	}
+	ns := s.operatorNS
+	if ns == "" {
+		if b, err := os.ReadFile(serviceAccountNamespaceFile); err == nil {
+			ns = strings.TrimSpace(string(b))
+		}
+	}
+	ctrl.Log.WithName("setup").Info("controller settings", "egressMode", string(mode),
+		"defaultDataDeletionPolicy", string(policy), "operatorNamespace", ns)
+	return controllerSettings{egress: egress.NewPolicy(mode), deletion: policy, namespace: ns}, nil
+}
+
 // Option adjusts the manager's options; tests use it, the binary passes none.
 type Option func(*ctrl.Options)
 
@@ -154,6 +211,12 @@ func (s *settings) managerOptions(opts []Option) ctrl.Options {
 		// The process exits as soon as the manager stops, so giving up the
 		// Lease on cancel is safe and makes a rollout faster.
 		LeaderElectionReleaseOnCancel: true,
+		// The Secret cache holds only the binding Secrets the operator owns
+		// (EB-2); the admin Secrets and CA bundles of stores are read live.
+		Cache: cache.Options{ByObject: binding.CacheByObject(EventRecorderName)},
+		Client: client.Options{Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&corev1.Secret{}, &corev1.ConfigMap{}},
+		}},
 	}
 	if s.webhookPort >= 0 {
 		o.WebhookServer = s.webhookServer()
@@ -194,6 +257,10 @@ func Run(ctx context.Context, args []string, getConfig func() (*rest.Config, err
 		return serveProbes(ctx, s.probeAddr)
 	}
 
+	cs, err := s.controllerSettings()
+	if err != nil {
+		return err
+	}
 	cfg, err := getConfig()
 	if err != nil {
 		return fmt.Errorf("load the Kubernetes client configuration: %w", err)
@@ -202,7 +269,7 @@ func Run(ctx context.Context, args []string, getConfig func() (*rest.Config, err
 	if err != nil {
 		return fmt.Errorf("create the manager: %w", err)
 	}
-	if err := setupManager(mgr, s.webhookPort >= 0); err != nil {
+	if err := setupManager(mgr, s.webhookPort >= 0, cs); err != nil {
 		return err
 	}
 	ctrl.Log.WithName("setup").Info("starting manager")
@@ -217,22 +284,31 @@ type setupStep struct {
 	fn   func(ctrl.Manager) error
 }
 
-// The manager's access to the group's kinds. The controllers that act on them
-// are added with their own markers (the Secrets, Events and Namespaces they
-// read and write).
+// The manager's access to the group's kinds, and to what the controllers touch
+// outside it. Namespaces: allowedNamespaces selectors (server.Resolve).
+// Secrets: the stores' admin credentials and CA bundles are read (an
+// ObjectStore's live in its own namespace, so this is a ClusterRole rule, not
+// only a Role in the operator namespace) and the binding Secrets are written;
+// the manager's cache of Secrets is restricted to its managed-by label
+// (binding.CacheByObject), and reads of unlabelled Secrets go to the API
+// server. ConfigMaps: CA bundles only. Events: the Event recorder.
 //
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores;objectstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets;bucketaccesses,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=clusterobjectstores/status;objectstores/status;buckets/status;bucketaccesses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=s3.craftainer.dev,resources=buckets/finalizers;bucketaccesses/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core;events.k8s.io,resources=events,verbs=create;patch
 
 // setupManager is a variable so a test can make the set-up fail: no step can
 // fail on a healthy manager.
 var setupManager = setup
 
-// setup registers the probes and, when they are enabled, the webhooks. There
-// are no controllers yet.
-func setup(mgr ctrl.Manager, webhooks bool) error {
+// setup registers the probes, the webhooks when they are enabled, and the
+// controllers.
+func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	steps := []setupStep{
 		{"probes", func(mgr ctrl.Manager) error { return addChecks(mgr) }},
 	}
@@ -243,6 +319,14 @@ func setup(mgr ctrl.Manager, webhooks bool) error {
 			setupStep{"bucket webhook", webhookv1alpha1.SetupBucketWebhookWithManager},
 		)
 	}
+	cfg := controller.Config{
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorder(EventRecorderName),
+		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, DefaultDeletionPolicy: cs.deletion,
+		Egress: cs.egress, NewStore: controller.NewClientStore,
+	}
+	steps = append(steps,
+		setupStep{"Bucket controller", (&controller.BucketReconciler{Config: cfg}).SetupWithManager},
+		setupStep{"BucketAccess controller", (&controller.AccessReconciler{Config: cfg}).SetupWithManager})
 	// +kubebuilder:scaffold:builder
 	return runSteps(mgr, steps)
 }

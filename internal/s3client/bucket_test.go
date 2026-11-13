@@ -1,0 +1,161 @@
+package s3client
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestBucketThatDoesNotExist(t *testing.T) {
+	f := newFakeStore(t)
+	st, err := f.client().Bucket(bg, "absent")
+	if err != nil || st.Exists {
+		t.Errorf("state = %+v, %v", st, err)
+	}
+}
+
+func TestBucketLifecycle(t *testing.T) {
+	f := newFakeStore(t)
+	c := f.client()
+	p := BucketParams{
+		Name: "uploads", Marker: "ns/uploads/uid-1", Versioning: true, ObjectLock: true, Quota: 50 << 30,
+		Rules: []Rule{{ID: "b-old", Prefix: "tmp/", Days: 7}, {ID: "a-logs", Prefix: "", Days: 30}},
+	}
+
+	// Create: the bucket with object lock, then the marker, versioning, rules
+	// and quota.
+	if err := c.CreateBucket(bg, p); err != nil {
+		t.Fatal(err)
+	}
+	if !f.bucket["uploads"].lock {
+		t.Error("the bucket was created without object lock")
+	}
+	st, err := c.Bucket(bg, "uploads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Exists || st.Marker() != p.Marker || !st.Versioning || st.Quota != 50<<30 || !RulesEqual(st.Rules, p.Rules) {
+		t.Errorf("state = %+v", st)
+	}
+	if st.Rules[0].ID != "a-logs" || st.Rules[1].Prefix != "tmp/" || st.Rules[1].Days != 7 || st.Rules[0].Disabled {
+		t.Errorf("rules = %+v", st.Rules)
+	}
+	if f.checksum == "" || f.quotaType != "HARD" {
+		t.Errorf("checksum = %q, quota type = %q", f.checksum, f.quotaType)
+	}
+
+	// Steady state: nothing is written.
+	f.reset()
+	if err := c.UpdateBucket(bg, p, st); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests()) != 0 {
+		t.Errorf("a converged bucket was written: %v", f.requests())
+	}
+
+	// Drift: another tag is kept, the marker is set again, versioning is
+	// suspended, the rules are removed and the quota cleared.
+	f.bucket["uploads"].tags = map[string]string{"team": "a", MarkerTag: "other"}
+	st, _ = c.Bucket(bg, "uploads")
+	q := p
+	q.Versioning, q.Rules, q.Quota = false, nil, 0
+	f.reset()
+	if err := c.UpdateBucket(bg, q, st); err != nil {
+		t.Fatal(err)
+	}
+	b := f.bucket["uploads"]
+	if b.tags["team"] != "a" || b.tags[MarkerTag] != p.Marker || b.versioning != "Suspended" || b.lifecycle != "" || len(f.quota) != 0 {
+		t.Errorf("bucket = %+v, quota = %v", b, f.quota)
+	}
+
+	// Deleting a bucket with objects fails with a fixed error; an empty one is
+	// deleted; one that is gone is success.
+	b.objects = true
+	err = c.DeleteBucket(bg, "uploads")
+	if !errors.Is(err, ErrBucketNotEmpty) || strings.Contains(err.Error(), "BucketNotEmpty") {
+		t.Errorf("not empty: %v", err)
+	}
+	b.objects = false
+	if err := c.DeleteBucket(bg, "uploads"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteBucket(bg, "uploads"); err != nil {
+		t.Errorf("repeat: %v", err)
+	}
+	f.failOn = "DELETE /uploads"
+	if err := c.DeleteBucket(bg, "uploads"); err == nil {
+		t.Error("a failing delete was not an error")
+	}
+}
+
+// A bucket without a tag set, versioning status or lifecycle configuration,
+// and a rule the store keeps disabled or writes in the legacy form.
+func TestBucketReadsWhatStoresAnswer(t *testing.T) {
+	f := newFakeStore(t)
+	c := f.client()
+	f.bucket["plain"] = &fakeBucket{tags: map[string]string{}}
+	st, err := c.Bucket(bg, "plain")
+	if err != nil || !st.Exists || st.Marker() != "" || st.Versioning || len(st.Rules) != 0 || st.Quota != 0 {
+		t.Errorf("state = %+v, %v", st, err)
+	}
+
+	f.bucket["plain"].lifecycle = `<LifecycleConfiguration>
+<Rule><ID>legacy</ID><Prefix>old/</Prefix><Status>Enabled</Status><Expiration><Days>3</Days></Expiration></Rule>
+<Rule><ID>off</ID><Filter><Prefix>x/</Prefix></Filter><Status>Disabled</Status><Expiration><Days>9</Days></Expiration></Rule>
+</LifecycleConfiguration>`
+	st, _ = c.Bucket(bg, "plain")
+	want := []Rule{{ID: "legacy", Prefix: "old/", Days: 3}, {ID: "off", Prefix: "x/", Days: 9, Disabled: true}}
+	if !RulesEqual(st.Rules, want) {
+		t.Errorf("rules = %+v", st.Rules)
+	}
+	// A disabled rule is drift.
+	if RulesEqual(st.Rules, []Rule{{ID: "legacy", Prefix: "old/", Days: 3}, {ID: "off", Prefix: "x/", Days: 9}}) {
+		t.Error("a disabled rule equals an enabled one")
+	}
+}
+
+func TestBucketErrors(t *testing.T) {
+	for _, failOn := range []string{"HEAD /b", "?tagging", "?versioning", "?lifecycle", "get-bucket-quota"} {
+		f := newFakeStore(t)
+		f.bucket["b"] = &fakeBucket{tags: map[string]string{"k": "v"}}
+		f.failOn = failOn
+		if _, err := f.client().Bucket(bg, "b"); err == nil {
+			t.Errorf("%s: no error", failOn)
+		}
+	}
+	for _, resource := range []string{"tagging", "versioning", "lifecycle"} {
+		f := newFakeStore(t)
+		f.bucket["b"] = &fakeBucket{tags: map[string]string{"k": "v"}}
+		f.setBody("GET /b?"+resource, "<not-closed")
+		if _, err := f.client().Bucket(bg, "b"); !errors.Is(err, ErrBadResponse) {
+			t.Errorf("%s: %v", resource, err)
+		}
+	}
+}
+
+func TestCreateAndUpdateErrors(t *testing.T) {
+	p := BucketParams{Name: "b", Marker: "m", Versioning: true, Quota: 5, Rules: []Rule{{ID: "r", Days: 1}}}
+	for _, failOn := range []string{"PUT /b", "tagging", "versioning", "lifecycle", "set-bucket-quota"} {
+		f := newFakeStore(t)
+		f.failOn = failOn
+		if err := f.client().CreateBucket(bg, p); err == nil {
+			t.Errorf("create, %s: no error", failOn)
+		}
+	}
+	// Removing the lifecycle rules of a bucket that has none is fine, and a
+	// failure to remove them is not.
+	f := newFakeStore(t)
+	f.bucket["b"] = &fakeBucket{tags: map[string]string{MarkerTag: "m"}}
+	c := f.client()
+	q := BucketParams{Name: "b", Marker: "m"}
+	cur := BucketState{Exists: true, Tags: map[string]string{MarkerTag: "m"}, Rules: []Rule{{ID: "r", Days: 1}}}
+	f.statusOn["DELETE /b?lifecycle"] = 404
+	if err := c.UpdateBucket(bg, q, cur); err != nil {
+		t.Errorf("rules already gone: %v", err)
+	}
+	delete(f.statusOn, "DELETE /b?lifecycle")
+	f.failOn = "DELETE /b?lifecycle"
+	if err := c.UpdateBucket(bg, q, cur); err == nil {
+		t.Error("a failing lifecycle delete was not an error")
+	}
+}
