@@ -16,7 +16,7 @@ ARG DEBIAN_VERSION=trixie
 # Keep in step with scripts/develop.d/10-go.sh's GO_VERSION and go.mod's
 # toolchain line (scripts/check-go-version.sh checks all three).
 # renovate: datasource=docker depName=golang
-ARG GO_VERSION=1.27.3
+ARG GO_VERSION=1.27.4
 
 # The CA bundle paths the template's tooling expects; also declared in
 # .devcontainer/Dockerfile (scripts/check-dockerfile-versions.sh keeps the two
@@ -28,7 +28,7 @@ ARG SSL_CERT_DIR=/etc/ssl/certs
 # builder -- compiles the manager. Runs on the build host's platform and
 # cross-compiles, so a multi-arch build needs no emulation.
 ########################################
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-${DEBIAN_VERSION}@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-${DEBIAN_VERSION}@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG SSL_CERT_FILE
