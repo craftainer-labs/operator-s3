@@ -632,9 +632,9 @@ spec:
               sk=$(cat "${TMPDIR:-/tmp}/e2e-sk-$NAMESPACE")
               # The key is gone from the store. RustFS may take a moment to
               # drop it from its IAM cache, so retry until 403 or the deadline.
-              deadline=$(( $(date +%s) + 90 ))
+              deadline=$(( $(date +%s) + 60 ))
               while :; do
-                out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b")
+                out=$(kubectl exec -n "$NAMESPACE" deploy/s3c -- env AK="$ak" SK="$sk" /s3/s3req GET "/$b") || out=""
                 code=$(printf %s "$out" | head -n 1)
                 test "$code" = 403 && break
                 if [ "$(date +%s)" -ge "$deadline" ]; then
