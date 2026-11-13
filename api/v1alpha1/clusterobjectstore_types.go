@@ -56,6 +56,9 @@ type ClusterObjectStoreList struct {
 // GetCommon returns the settings every server kind shares.
 func (s *ClusterObjectStore) GetCommon() *common.ServerCommon { return &s.Spec.ServerCommon }
 
+// GetServerStatus returns the status the probe writes (probe.Server).
+func (s *ClusterObjectStore) GetServerStatus() *common.ServerStatus { return &s.Status }
+
 // GetEndpoint returns spec.endpoint.
 func (s *ClusterObjectStore) GetEndpoint() string { return s.Spec.Endpoint }
 

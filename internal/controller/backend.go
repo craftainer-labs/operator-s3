@@ -52,6 +52,9 @@ type Store interface {
 	DeleteKey(ctx context.Context, key string) error
 	OwnedPolicies(ctx context.Context, user string) ([]string, error)
 	DeleteAccess(ctx context.Context, user string, keys []string) error
+	// ServerVersion is the health probe: an authenticated read of the
+	// server's version.
+	ServerVersion(ctx context.Context) (string, error)
 }
 
 var _ Store = (*s3client.Client)(nil)
@@ -101,11 +104,27 @@ type backend struct {
 }
 
 // region is the signing region: the store's, us-east-1 when it names none.
-func (b *backend) region() string {
-	if b.spec.Region == "" {
+func (b *backend) region() string { return regionOf(b.spec) }
+
+func regionOf(spec s3v1alpha1.ObjectStoreConfig) string {
+	if spec.Region == "" {
 		return "us-east-1"
 	}
-	return b.spec.Region
+	return spec.Region
+}
+
+// adminTarget is the connection to a store: its endpoint and signing region,
+// the admin credentials of conn and the TLS settings. The claims' reconcilers
+// and the health probe both build theirs here.
+func adminTarget(spec s3v1alpha1.ObjectStoreConfig, conn server.Connection, dial egress.DialFunc) (s3client.Target, error) {
+	access, secret := conn.Admin[AdminAccessKey], conn.Admin[AdminSecretKey]
+	if len(access) == 0 || len(secret) == 0 {
+		return s3client.Target{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrAdminCredentials)
+	}
+	return s3client.Target{
+		Endpoint: conn.Endpoint, Region: regionOf(spec), AccessKey: string(access), SecretKey: string(secret),
+		ServerName: conn.ServerName, CABundle: conn.CABundle, MinTLS: conn.MinTLSVersion, Dial: dial,
+	}, nil
 }
 
 // backend resolves ref for a claim in ns: the connection settings through
@@ -130,15 +149,12 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
 	}
-	access, secret := conn.Admin[AdminAccessKey], conn.Admin[AdminSecretKey]
-	if len(access) == 0 || len(secret) == 0 {
-		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrAdminCredentials)
+	target, err := adminTarget(spec, conn, dial)
+	if err != nil {
+		return nil, err
 	}
+	target.KeepAlive = true
 	b := &backend{spec: spec, conn: conn}
-	target := s3client.Target{
-		Endpoint: conn.Endpoint, Region: b.region(), AccessKey: string(access), SecretKey: string(secret),
-		ServerName: conn.ServerName, CABundle: conn.CABundle, MinTLS: conn.MinTLSVersion, Dial: dial, KeepAlive: true,
-	}
 	b.store, err = c.Cache.Get(cacheKey, stamp(obj, target, conn.Proxy), func() (Store, error) { return c.NewStore(target) })
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)

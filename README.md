@@ -137,6 +137,54 @@ finalizer (see "Deleting a claim" below).
   whose bucket carries its marker the record, so only a claim deleted before
   its next reconcile is affected.
 
+### Server health
+
+`ClusterObjectStore` and `ObjectStore` get the `ServerStatus` their CRDs promise
+from one `probe.Reconciler` of `lib-operator-go` (`pkg/probe`) per kind, wired
+in `internal/app`:
+
+- **What is probed:** `GET /rustfs/admin/v3/info` (the server info, which needs
+  the admin credentials), signed like every other admin call. It answers for
+  both things the status promises: that the store is reachable over verified
+  TLS, and that it accepts the admin credentials. RustFS reports a version in
+  that answer, so `status.serverVersion` is the version of the first server in
+  it that names one (RustFS reports `<commit date>@<tag, short commit or
+  package version>`; the part after the `@` is kept, at most 64 bytes). A store
+  that answers but names no version is still `Ready` and reachable, with an
+  empty `serverVersion`: reachability and accepted credentials are what the
+  conditions say.
+- `status.lastProbeTime`: the last probe that ran and whose result was recorded
+  (a store that cannot be probed, `InvalidServer`, has none). It is rewritten
+  when the result changes and otherwise every 10 minutes, so a healthy fleet
+  does not write one status per store per minute.
+- `Ready` and `ServerReachable` are `True` (reason `Available`) when the probe
+  succeeded, and `False` with reason `ServerUnreachable` when it did not
+  (unreachable, TLS failure, refused credentials, or a failed call). A store
+  whose admin Secret is in a forbidden namespace is
+  `AdminSecretNamespaceForbidden`; one whose connection settings are missing or
+  invalid (an absent Secret or CA ConfigMap, a bad proxy URL, no `accessKey` and
+  `secretKey`) is `Ready=False` with `ServerReachable=Unknown` and reason
+  `InvalidServer`. The status never shows why a call failed; the operator log
+  has the category (policy, TLS, authentication, timeout, other), once per
+  change. Neither the status nor the log holds a key or a credential.
+- A probe runs every `spec.healthCheckInterval` (default one minute, plus up to
+  10% jitter), whether the last one succeeded or not; a store is also probed at
+  once when it is created or its spec changes. A probe is bounded to 30 seconds.
+- The probe connects exactly as the claims do: the egress policy, the store's
+  TLS settings (its CA bundle, `tls.serverName`, minimum version) and proxy, as
+  the admin user. It builds one client for the probe and closes its
+  connections, not sharing the claims' client cache.
+- RBAC: `get`, `list` and `watch` on Secrets and ConfigMaps, and `get`, `update`
+  and `patch` on the stores' `status`, in the chart role.
+- Caches: the manager's Secret and ConfigMap caches keep only the objects with
+  the `managed-by` label (so the operator does not hold every Secret or ConfigMap
+  in memory), and the probe reads the admin Secret and the CA bundle live, not
+  from the cache, so every probe sees the current object. A change to an
+  unlabelled admin Secret, CA Secret or CA ConfigMap does not trigger a probe at
+  once; it is picked up at the next probe interval (one minute by default). Do
+  not widen either cache for that: it costs memory and widens exposure for a
+  latency gain of at most one interval.
+
 ### Known limits
 
 - Policy document drift is not detected, only which policy is attached.
@@ -158,12 +206,6 @@ finalizer (see "Deleting a claim" below).
   same admin identity inside it is adopted. The operator therefore needs
   dedicated admin credentials that no other creator shares; a create by a
   different account gets `BucketAlreadyExists`.
-
-### Not done yet
-
-- **NOX-probe:** the store kinds do not probe their server: `ServerStatus`
-  (`serverVersion`, `lastProbeTime`, the `Ready` and `ServerReachable`
-  conditions) stays empty until the probe lands in `lib-operator-go`.
 
 ## Install
 

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -77,5 +78,44 @@ func TestTLSIsVerified(t *testing.T) {
 	modern := sv.client(t, func(tg *s3client.Target) { tg.MinTLS = tls.VersionTLS13 })
 	if _, err := modern.OwnedPolicies(bg, "it-tls"); err != nil {
 		t.Errorf("TLS 1.3: %v", err)
+	}
+}
+
+// The health probe reads the server version from the admin API over the
+// verified connection, and a failed one names a category, never the host or a
+// key.
+func TestServerVersion(t *testing.T) {
+	sv := load(t)
+
+	got, err := sv.client(t).ServerVersion(bg)
+	if err != nil {
+		t.Fatalf("ServerVersion: %v", err)
+	}
+	if got == "" || strings.Contains(got, "@") {
+		t.Errorf("server version = %q, want the tag, short commit or package version", got)
+	}
+	t.Logf("RustFS reports version %q", got)
+
+	// A wrong secret and an unknown access key: the store refuses, and the
+	// error is an authentication failure that holds neither key nor host.
+	for what, mutate := range map[string]func(*s3client.Target){
+		"wrong secret":   func(tg *s3client.Target) { tg.SecretKey = "wrong-secret-0123456789" },
+		"unknown access": func(tg *s3client.Target) { tg.AccessKey = "unknown-access-key" },
+	} {
+		_, err := sv.client(t, mutate).ServerVersion(bg)
+		if !errors.Is(err, lifecycle.ErrUnreachable) || !errors.Is(err, s3client.ErrConnAuth) {
+			t.Fatalf("%s: %v, want an authentication failure", what, err)
+		}
+		for _, secret := range []string{"wrong-secret-0123456789", "unknown-access-key", sv.access, sv.secret, sv.host} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("%s: the error leaks %q: %v", what, secret, err)
+			}
+		}
+	}
+
+	// The certificate is verified for the probe as for every other call.
+	_, err = sv.client(t, func(tg *s3client.Target) { tg.CABundle = nil }).ServerVersion(bg)
+	if !errors.Is(err, s3client.ErrConnTLS) || strings.Contains(err.Error(), sv.host) {
+		t.Errorf("no CA bundle: %v", err)
 	}
 }

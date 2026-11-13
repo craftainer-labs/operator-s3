@@ -10,6 +10,7 @@ import (
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
+	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 )
 
@@ -20,6 +21,8 @@ var (
 	_ lifecycle.Claim = (*BucketAccess)(nil)
 	_ server.Server   = (*ObjectStore)(nil)
 	_ server.Server   = (*ClusterObjectStore)(nil)
+	_ probe.Server    = (*ObjectStore)(nil)
+	_ probe.Server    = (*ClusterObjectStore)(nil)
 )
 
 func TestAddToSchemeRegistersEveryKind(t *testing.T) {
@@ -44,6 +47,10 @@ func TestObjectStoreAccessors(t *testing.T) {
 	g.Expect(store.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(store.GetEndpoint()).To(Equal("https://rustfs:9000"))
 	g.Expect(store.GetAllowedNamespaces()).To(BeNil())
+
+	// The probe writes through the pointer, into the kind's own status.
+	store.GetServerStatus().ServerVersion = "1.0.0-rc.5"
+	g.Expect(store.Status.ServerVersion).To(Equal("1.0.0-rc.5"))
 }
 
 func TestClusterObjectStoreAccessors(t *testing.T) {
@@ -56,6 +63,9 @@ func TestClusterObjectStoreAccessors(t *testing.T) {
 	g.Expect(store.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(store.GetEndpoint()).To(Equal("https://rustfs:9000"))
 	g.Expect(store.GetAllowedNamespaces().From).To(Equal(common.NamespacesAll))
+
+	store.GetServerStatus().ServerVersion = "1.0.0-rc.4"
+	g.Expect(store.Status.ServerVersion).To(Equal("1.0.0-rc.4"))
 }
 
 func TestBucketAccessors(t *testing.T) {

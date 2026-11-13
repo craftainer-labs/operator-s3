@@ -232,6 +232,8 @@ func (f *fakeStore) serve(w http.ResponseWriter, r *http.Request) {
 func (f *fakeStore) admin(w http.ResponseWriter, r *http.Request, path string, body []byte) {
 	q := r.URL.Query()
 	switch r.Method + " " + path {
+	case "GET /info":
+		_, _ = io.WriteString(w, `{"info":{"servers":[{"state":"online","version":"2026-05-01T00:00:00Z@1.0.0-rc.5"}]},"bitrotSelftest":"passed"}`)
 	case "GET /user-info":
 		u := f.user[q.Get("accessKey")]
 		if u == nil {

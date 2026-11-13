@@ -479,6 +479,35 @@ spec:
                 pathStyle: true
                 backend: RustFS
 
+    - name: the stores report their own status
+      # The probe writes this, so a claim becoming Ready is no longer the
+      # evidence that a store is: assert it on the stores themselves.
+      try:
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ClusterObjectStore
+              metadata:
+                name: e2e-s3
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+                (conditions[?type == 'ServerReachable'] | [0].status): "True"
+                (length(serverVersion) > `0`): true
+                (lastProbeTime != null): true
+        - assert:
+            timeout: 3m
+            resource:
+              apiVersion: s3.craftainer.dev/v1alpha1
+              kind: ObjectStore
+              metadata:
+                name: team-s3
+              status:
+                (conditions[?type == 'Ready'] | [0].status): "True"
+                (conditions[?type == 'ServerReachable'] | [0].status): "True"
+                (length(serverVersion) > `0`): true
+                (lastProbeTime != null): true
+
     - name: Bucket and BucketAccess are created and become ready
       try:
         - apply:
