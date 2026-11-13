@@ -66,19 +66,24 @@ kubectl apply -f "$manifest"
 kubectl wait --for=condition=Available deployment --all -n cert-manager --timeout=300s
 # Available does not mean the webhook answers: its Service endpoint and the
 # injected CA bundle can lag, and the chart's Issuer then fails with
-# "connection refused". Wait (bounded, 3 minutes) until the webhook admits an
-# Issuer, using a server-side dry run that creates nothing.
-for attempt in $(seq 1 36); do
-    if kubectl apply --dry-run=server -f - >/dev/null 2>&1 <<'ISSUER'; then
+# "connection refused". Wait until the webhook admits an Issuer and a
+# Certificate (a server-side dry run creates nothing), for at most 3 minutes.
+probe="${workdir}/webhook-ready.yaml"
+cat >"$probe" <<'YAML'
 apiVersion: cert-manager.io/v1
 kind: Issuer
-metadata: {name: webhook-ready, namespace: default}
+metadata: {name: webhook-ready, namespace: cert-manager}
 spec: {selfSigned: {}}
-ISSUER
-        break
-    fi
-    if [[ "$attempt" -eq 36 ]]; then
-        echo "e2e: the cert-manager webhook did not become ready" >&2
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata: {name: webhook-ready, namespace: cert-manager}
+spec: {secretName: webhook-ready, dnsNames: [webhook-ready.invalid], issuerRef: {name: webhook-ready}}
+YAML
+deadline=$((SECONDS + 180))
+until out="$(kubectl apply --dry-run=server --request-timeout=15s -f "$probe" 2>&1)"; do
+    if ((SECONDS >= deadline)); then
+        echo "e2e: the cert-manager webhook did not become ready: ${out}" >&2
         exit 1
     fi
     sleep 5
