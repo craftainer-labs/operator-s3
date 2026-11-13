@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
@@ -49,7 +51,11 @@ func (p Prober) Probe(ctx context.Context, srv server.Server, conn server.Connec
 	if c, ok := store.(interface{ CloseIdleConnections() }); ok {
 		defer c.CloseIdleConnections()
 	}
-	version, err := store.ServerVersion(ctx)
+	// The client logs the raw transport error (it names the host) and a
+	// snippet of the answer at every call. The probe repeats every interval and
+	// the reconciler logs its category once per change, so the client's own
+	// log lines are dropped here.
+	version, err := store.ServerVersion(log.IntoContext(ctx, log.FromContext(ctx).WithSink(nil)))
 	if errors.Is(err, s3client.ErrNoVersion) {
 		return "", nil
 	}
