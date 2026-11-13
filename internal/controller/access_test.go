@@ -322,6 +322,7 @@ func TestAccessStoreFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		store.fail[method] = errStore
+		cur.KeyExists = false // Update issues the key only when it is gone
 		if _, err := e.Update(ctx, spec, cur); !errors.Is(err, errStore) {
 			t.Errorf("update, %s: %v", method, err)
 		}
