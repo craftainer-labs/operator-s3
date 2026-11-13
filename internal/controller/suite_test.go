@@ -286,7 +286,7 @@ func (h *harness) must(err error) {
 }
 
 func (h *harness) ref() common.ServerRef {
-	return common.ServerRef{Kind: kindClusterObjectStore, Name: h.server.Name}
+	return common.ServerRef{Kind: s3v1alpha1.KindClusterObjectStore, Name: h.server.Name}
 }
 
 func (h *harness) bucket(name string, mutate func(*s3v1alpha1.Bucket)) *s3v1alpha1.Bucket {

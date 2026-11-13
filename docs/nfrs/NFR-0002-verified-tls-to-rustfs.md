@@ -20,12 +20,13 @@ Security (encryption in transit, FIPS-capable build, plan row EB-14).
   (1.2 by default, 1.3 on request). HTTP/2 is not negotiated.
 - A redirect is never followed: it would carry a signed request to a host the
   egress policy has not seen named.
-- Every request, admin and S3, is signed with AWS Signature Version 4
-  (`aws-sdk-go-v2/aws/signer/v4`), service `s3`, the store's `region`
-  (`us-east-1` by default), over the SHA-256 of the body. The admin API is
-  RustFS's `/rustfs/admin/v3`, whose payloads are plain JSON. MinIO's
-  `/minio/admin` surface (encrypted payloads, AGPL client library) is not used
-  (NR4).
+- Every request, admin and S3, is signed with AWS Signature Version 4, service
+  `s3`, the store's `region` (`us-east-1` by default), over the SHA-256 of the
+  body: the S3 calls by `minio-go/v7`, the admin calls with its
+  `pkg/signer`. Both use one `http.Transport`, with the dialer, the CA bundle
+  and the TLS floor above and no environment proxy. The admin API is RustFS's
+  `/rustfs/admin/v3`, whose payloads are plain JSON. MinIO's `/minio/admin`
+  surface (encrypted payloads, AGPL `madmin-go`) is not used (NR4).
 
 ## Source
 
@@ -34,8 +35,9 @@ Plan row EB-14 and the NR4 decision;
 
 ## Verification
 
-`TestNewRejectsWhatItCannotUse`, `TestNewDefaults`, `TestRequestsAreSigned` (the
-test store signs every request again and compares the signatures) and
+`TestNewRejectsWhatItCannotUse`, `TestNewDefaults`, `TestRequestsAreSigned` and `TestTheRegionReachesTheSignature` (the test
+store checks the signature of every request, admin and S3, with its own
+implementation of SigV4) and
 `TestTransportFailuresAreCategorised` (an untrusted CA, a wrong name and a
 plaintext server all fail) in `internal/s3client`; `TestBucketLifecycleRetain`
 (`internal/controller`) checks that the store's endpoint, region, bundle

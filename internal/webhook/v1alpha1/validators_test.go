@@ -173,3 +173,52 @@ func TestBucketValidator(t *testing.T) {
 	_, err = v.ValidateDelete(ctx, bucketWithQuota("0"))
 	g.Expect(err).NotTo(HaveOccurred())
 }
+
+func bucketAccessWithPrefix(prefix string) *s3v1alpha1.BucketAccess {
+	return &s3v1alpha1.BucketAccess{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+		Spec:       s3v1alpha1.BucketAccessSpec{Prefix: prefix},
+	}
+}
+
+func TestBucketAccessValidator(t *testing.T) {
+	v := &BucketAccessValidator{}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		prefix string
+		valid  bool
+	}{
+		{prefix: "", valid: true},
+		{prefix: "app/", valid: true},
+		{prefix: "app/2026-11/", valid: true},
+		{prefix: "*"},
+		{prefix: "app/*"},
+		{prefix: "a?b"},
+		{prefix: "${aws:username}/"},
+	} {
+		t.Run(tc.prefix, func(t *testing.T) {
+			g := NewWithT(t)
+			warnings, err := v.ValidateCreate(ctx, bucketAccessWithPrefix(tc.prefix))
+			g.Expect(warnings).To(BeEmpty())
+			_, updateErr := v.ValidateUpdate(ctx, bucketAccessWithPrefix(""), bucketAccessWithPrefix(tc.prefix))
+			if tc.valid {
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(updateErr).NotTo(HaveOccurred())
+				return
+			}
+			for _, e := range []error{err, updateErr} {
+				g.Expect(apierrors.IsInvalid(e)).To(BeTrue(), "%v", e)
+				g.Expect(e.Error()).To(ContainSubstring("spec.prefix"))
+			}
+		})
+	}
+
+	g := NewWithT(t)
+	deleting := bucketAccessWithPrefix("*")
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	_, err := v.ValidateUpdate(ctx, bucketAccessWithPrefix(""), deleting)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, err = v.ValidateDelete(ctx, bucketAccessWithPrefix("*"))
+	g.Expect(err).NotTo(HaveOccurred())
+}

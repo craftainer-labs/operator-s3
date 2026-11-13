@@ -317,6 +317,7 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 			setupStep{"cluster object store webhook", webhookv1alpha1.SetupClusterObjectStoreWebhookWithManager},
 			setupStep{"object store webhook", webhookv1alpha1.SetupObjectStoreWebhookWithManager},
 			setupStep{"bucket webhook", webhookv1alpha1.SetupBucketWebhookWithManager},
+			setupStep{"bucket access webhook", webhookv1alpha1.SetupBucketAccessWebhookWithManager},
 		)
 	}
 	cfg := controller.Config{

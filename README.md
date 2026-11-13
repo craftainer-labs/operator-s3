@@ -13,9 +13,9 @@ conventions of
 See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared by every
 instance.
 
-Status: the API types, CRDs and admission webhooks are in place; the
-controllers that act on them are added in later changes, so the manager
-serves the webhooks and nothing reconciles yet.
+Status: the `Bucket` and `BucketAccess` controllers are in place, tested against
+an in-memory store and an HTTPS test server. They have not run against a real
+RustFS yet (item NO3b-2, below). The stores do not report health yet (below).
 
 ## API
 
@@ -36,6 +36,72 @@ The admission webhooks check what the schema cannot: an `endpoint` that is a
 well-formed `https` URL, a `proxyURL` with a `http`, `https` or `socks5`
 scheme, and a `Bucket` quota of at least one byte. Defaults and every other
 rule are in the CRD schema (OpenAPI and CEL).
+
+## Controllers
+
+Both controllers run `lifecycle.Reconcile` of
+[`lib-operator-go`](https://github.com/craftainer-labs/lib-operator-go), so
+finalizers, `deletionPolicy`, `managementPolicies`, drift polling, the
+`craftainer.dev/rotate`, `poll-interval` and `paused` annotations and the
+`Ready`, `Synced` and `ServerReachable` conditions work as ADR 0002 says.
+
+- **Bucket** creates the bucket (name derived from namespace and name, kept in
+  `status.externalName`), a tag `craftainer.dev/claim` that marks it as the
+  claim's, versioning (object lock implies it), lifecycle rules and the hard
+  quota. Object lock is set only when the bucket is created. With
+  `deletionPolicy: Delete` the bucket is deleted with the claim, if it is empty:
+  the operator never deletes objects.
+- **BucketAccess** creates an IAM user with one policy for the bucket (and
+  `prefix`), and one service account per credential generation. The binding
+  Secret (type `servicebinding.io/s3`) holds the service account's keys.
+  Rotation issues the next service account first and deletes the previous one
+  after `gracePeriod`.
+
+The admin API is RustFS's `/rustfs/admin/v3`, signed with SigV4; MinIO is not
+supported. A store's `endpoint` is an `https` URL without a path.
+
+### Settings
+
+| Setting | Flag | Default | Meaning |
+| --- | --- | --- | --- |
+| `EGRESS_MODE` | `--egress-mode` | `strict` | `strict` refuses connections to loopback, link-local, cloud metadata and private ranges; `allow-private` refuses all but the private ranges, for stores on private addresses |
+| `DEFAULT_DATA_DELETION_POLICY` | `--default-data-deletion-policy` | `Retain` | the `deletionPolicy` a new `Bucket` is pinned to when its spec leaves it unset |
+| `POD_NAMESPACE` | `--operator-namespace` | the pod's namespace | where a `ClusterObjectStore`'s admin Secret and CA bundle are read from |
+
+Credentials in a URL (`https://user:pw@host`) are rejected in `endpoint` and
+`proxyURL`; credentials come only from Secret references. Conditions and Events
+carry fixed texts only (for example "authentication failed"); the details are in
+the operator log.
+
+### A claim that stays `NameCollision`
+
+The operator never adopts or deletes what it did not create.
+
+- `Bucket`: `Synced=False`, reason `NameCollision`, with "bucket exists and is
+  not managed by this operator" means a bucket of the derived name exists
+  without the tag `craftainer.dev/claim`. Another message means the tag names
+  another claim. Either the bucket is someone else's (rename the `Bucket`, or
+  remove the bucket yourself if it is stale), or the operator stopped between
+  creating it and tagging it: put the tag
+  `craftainer.dev/claim=<namespace>/<name>/<uid>` on the bucket and the next
+  reconcile takes it over.
+- `BucketAccess`: the same reason means the IAM user of the derived name exists
+  and the claim never recorded creating it. IAM users cannot carry a marker, so
+  delete the stale user (and its policy and service accounts) with the RustFS
+  admin tools, or rename the claim.
+
+A deletion blocked this way keeps the finalizer, by design.
+
+### Not done yet
+
+- **NO3b-2:** a real RustFS lane (a TLS RustFS service in the devcontainer and
+  in CI) to check the admin routes, the SigV4 signatures, the 404 versus 500
+  answers for a missing object, the quota body, tagging and lifecycle, and that a
+  policy confines a key to its bucket and prefix. Policy document drift is not
+  detected, only which policy is attached.
+- **NOX-probe:** the store kinds do not probe their server: `ServerStatus`
+  (`serverVersion`, `lastProbeTime`, the `Ready` and `ServerReachable`
+  conditions) stays empty until the probe lands in `lib-operator-go`.
 
 ## Quick start
 

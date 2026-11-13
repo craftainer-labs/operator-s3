@@ -82,9 +82,6 @@ type Config struct {
 	Now func() time.Time
 }
 
-// The kinds a serverRef may name.
-const kindClusterObjectStore = "ClusterObjectStore"
-
 // backend is a resolved store.
 type backend struct {
 	store Store
@@ -139,7 +136,7 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 // storeSpec reads the S3 fields of the store, which server.Connection does not
 // carry (ADR 0002, open issues).
 func (c Config) storeSpec(ctx context.Context, ns string, ref common.ServerRef) (s3v1alpha1.ObjectStoreConfig, error) {
-	if ref.Kind == kindClusterObjectStore {
+	if ref.Kind == s3v1alpha1.KindClusterObjectStore {
 		var s s3v1alpha1.ClusterObjectStore
 		err := c.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, &s)
 		return s.Spec.ObjectStoreConfig, err

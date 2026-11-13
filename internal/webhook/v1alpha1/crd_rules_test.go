@@ -252,6 +252,17 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			rejected(create(a), "serverRef.kind must be ClusterObjectStore or ObjectStore")
 		})
 
+		It("rejects a prefix that would widen the policy", func() {
+			for _, prefix := range []string{"*", "app/*", "a?b", "${aws:username}/"} {
+				a := access("wide")
+				a.Spec.Prefix = prefix
+				rejected(create(a), "prefix must not contain *, ? or $")
+			}
+			a := access("plain-prefix")
+			a.Spec.Prefix = "app/2026-11/"
+			Expect(create(a)).To(Succeed())
+		})
+
 		It("needs the Update management policy for a rotationPolicy", func() {
 			a := access("rotating")
 			a.Spec.ManagementPolicies = []common.ManagementPolicy{common.ManagementObserve, common.ManagementCreate}

@@ -1,9 +1,12 @@
 package s3client
 
 import (
-	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net"
@@ -13,14 +16,11 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
 // fakeStore is a RustFS: the admin API and the S3 bucket API over an HTTPS
-// test server, in memory. It checks the SigV4 signature of every request by
-// signing the same request again, and records what it was asked. There is no
+// test server, in memory. It checks the SigV4 signature of every request with
+// its own implementation of the algorithm, and records what it was asked. There is no
 // real RustFS to run against until NO3b-2, so its routes follow the admin
 // handlers of rustfs/rustfs at 1.0.0-rc.5.
 type fakeStore struct {
@@ -38,8 +38,10 @@ type fakeStore struct {
 	failOn   string
 	statusOn map[string]int
 	body     map[string]string
-	// checksum and quotaType are what the last tagging and quota writes carried.
-	checksum, quotaType string
+	// lenient makes a bad signature a 403 without a test failure.
+	lenient bool
+	// quotaType is what the last quota write carried.
+	quotaType string
 	// special answers a request instead of the routes when it returns true.
 	special func(w http.ResponseWriter, r *http.Request) bool
 }
@@ -133,31 +135,50 @@ func xmlError(w http.ResponseWriter, status int, code string) {
 	_, _ = fmt.Fprintf(w, "<Error><Code>%s</Code><Message>secret detail</Message></Error>", code)
 }
 
-// verify signs the request again with the admin credentials and the signing
-// time it carries, and compares the Authorization headers.
+func hmacSHA(key []byte, data string) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte(data))
+	return h.Sum(nil)
+}
+
+// verify checks the SigV4 signature of a request against the admin
+// credentials, the region us-east-1 and the service s3, from the headers the
+// request says it signed.
 func (f *fakeStore) verify(r *http.Request) string {
-	auth := r.Header.Get("Authorization")
-	_, rest, _ := strings.Cut(auth, "SignedHeaders=")
-	signed, _, _ := strings.Cut(rest, ",")
-	when, err := time.Parse("20060102T150405Z", r.Header.Get("X-Amz-Date"))
-	if err != nil {
-		return "no X-Amz-Date"
+	rest, ok := strings.CutPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ")
+	if !ok {
+		return "no SigV4 authorization"
 	}
-	u := *r.URL
-	u.Scheme, u.Host = "https", r.Host
-	again := (&http.Request{Method: r.Method, URL: &u, Host: r.Host, Header: http.Header{}, ContentLength: r.ContentLength}).
-		WithContext(context.Background())
-	for _, name := range strings.Split(signed, ";") {
-		if name != "host" && name != "content-length" {
-			again.Header.Set(name, r.Header.Get(name))
+	fields := map[string]string{}
+	for _, kv := range strings.Split(rest, ",") {
+		k, v, _ := strings.Cut(strings.TrimSpace(kv), "=")
+		fields[k] = v
+	}
+	scope, ok := strings.CutPrefix(fields["Credential"], testAccess+"/")
+	parts := strings.Split(scope, "/")
+	if !ok || len(parts) != 4 || parts[1] != "us-east-1" || parts[2] != "s3" || parts[3] != "aws4_request" {
+		return "credential scope " + fields["Credential"]
+	}
+	var canon strings.Builder
+	for _, name := range strings.Split(fields["SignedHeaders"], ";") {
+		v := r.Header.Get(name)
+		if name == "host" {
+			v = r.Host
 		}
+		canon.WriteString(name + ":" + strings.Join(strings.Fields(v), " ") + "\n")
 	}
-	creds := aws.Credentials{AccessKeyID: testAccess, SecretAccessKey: testSecret}
-	if err := v4.NewSigner().SignHTTP(context.Background(), creds, again, r.Header.Get("X-Amz-Content-Sha256"), "s3", "us-east-1", when); err != nil {
-		return err.Error()
+	query := strings.ReplaceAll(r.URL.Query().Encode(), "+", "%20")
+	request := strings.Join([]string{
+		r.Method, r.URL.EscapedPath(), query, canon.String(), fields["SignedHeaders"], r.Header.Get("X-Amz-Content-Sha256"),
+	}, "\n")
+	sum := sha256.Sum256([]byte(request))
+	toSign := "AWS4-HMAC-SHA256\n" + r.Header.Get("X-Amz-Date") + "\n" + scope + "\n" + hex.EncodeToString(sum[:])
+	key := hmacSHA([]byte("AWS4"+testSecret), parts[0])
+	for _, p := range parts[1:] {
+		key = hmacSHA(key, p)
 	}
-	if again.Header.Get("Authorization") != auth {
-		return "signature mismatch: " + auth + " != " + again.Header.Get("Authorization")
+	if hex.EncodeToString(hmacSHA(key, toSign)) != fields["Signature"] {
+		return "signature mismatch for " + r.Method + " " + r.URL.String()
 	}
 	return ""
 }
@@ -175,7 +196,9 @@ func (f *fakeStore) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bad := f.verify(r); bad != "" {
-		f.t.Errorf("request %s: %s", line, bad)
+		if !f.lenient {
+			f.t.Errorf("request %s: %s", line, bad)
+		}
 		xmlError(w, http.StatusForbidden, "SignatureDoesNotMatch")
 		return
 	}
@@ -202,7 +225,7 @@ func (f *fakeStore) serve(w http.ResponseWriter, r *http.Request) {
 		f.admin(w, r, strings.TrimPrefix(r.URL.Path, adminPrefix), body)
 		return
 	}
-	f.s3(w, r, strings.TrimPrefix(r.URL.Path, "/"), body)
+	f.s3(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), "/"), body)
 }
 
 func (f *fakeStore) admin(w http.ResponseWriter, r *http.Request, path string, body []byte) {
@@ -305,17 +328,19 @@ func (f *fakeStore) admin(w http.ResponseWriter, r *http.Request, path string, b
 
 func (f *fakeStore) s3(w http.ResponseWriter, r *http.Request, name string, body []byte) {
 	b := f.bucket[name]
-	if r.Method == http.MethodPut && r.URL.RawQuery == "" {
+	resource := ""
+	for _, k := range []string{"tagging", "versioning", "lifecycle"} {
+		if r.URL.Query().Has(k) {
+			resource = k
+		}
+	}
+	if r.Method == http.MethodPut && resource == "" {
 		f.bucket[name] = &fakeBucket{tags: map[string]string{}, lock: r.Header.Get("X-Amz-Bucket-Object-Lock-Enabled") == "true"}
 		return
 	}
 	if b == nil {
 		xmlError(w, http.StatusNotFound, "NoSuchBucket")
 		return
-	}
-	resource := ""
-	for k := range r.URL.Query() {
-		resource = k
 	}
 	switch r.Method + " " + resource {
 	case "HEAD ":
@@ -337,20 +362,21 @@ func (f *fakeStore) s3(w http.ResponseWriter, r *http.Request, name string, body
 		}
 		_, _ = io.WriteString(w, out+"</TagSet></Tagging>")
 	case "PUT tagging":
-		var in tagging
-		if err := decodeXML(body, &in); err != nil {
+		var in struct {
+			Tags []struct{ Key, Value string } `xml:"TagSet>Tag"`
+		}
+		if err := xml.Unmarshal(body, &in); err != nil {
 			f.t.Errorf("tagging body: %v", err)
 		}
 		b.tags = map[string]string{}
 		for _, t := range in.Tags {
 			b.tags[t.Key] = t.Value
 		}
-		f.checksum = r.Header.Get("X-Amz-Checksum-Sha256")
 	case "GET versioning":
 		_, _ = io.WriteString(w, "<VersioningConfiguration><Status>"+b.versioning+"</Status></VersioningConfiguration>")
 	case "PUT versioning":
-		var in versioning
-		if err := decodeXML(body, &in); err != nil {
+		var in struct{ Status string }
+		if err := xml.Unmarshal(body, &in); err != nil {
 			f.t.Errorf("versioning body: %v", err)
 		}
 		b.versioning = in.Status

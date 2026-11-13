@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 )
 
 func TestBucketThatDoesNotExist(t *testing.T) {
@@ -40,8 +42,8 @@ func TestBucketLifecycle(t *testing.T) {
 	if st.Rules[0].ID != "a-logs" || st.Rules[1].Prefix != "tmp/" || st.Rules[1].Days != 7 || st.Rules[0].Disabled {
 		t.Errorf("rules = %+v", st.Rules)
 	}
-	if f.checksum == "" || f.quotaType != "HARD" {
-		t.Errorf("checksum = %q, quota type = %q", f.checksum, f.quotaType)
+	if f.quotaType != "HARD" {
+		t.Errorf("quota type = %q", f.quotaType)
 	}
 
 	// Steady state: nothing is written.
@@ -115,27 +117,28 @@ func TestBucketReadsWhatStoresAnswer(t *testing.T) {
 }
 
 func TestBucketErrors(t *testing.T) {
-	for _, failOn := range []string{"HEAD /b", "?tagging", "?versioning", "?lifecycle", "get-bucket-quota"} {
+	for _, failOn := range []string{"HEAD /bkt", "?tagging", "?versioning", "?lifecycle", "get-bucket-quota"} {
 		f := newFakeStore(t)
-		f.bucket["b"] = &fakeBucket{tags: map[string]string{"k": "v"}}
+		f.bucket["bkt"] = &fakeBucket{tags: map[string]string{"k": "v"}}
 		f.failOn = failOn
-		if _, err := f.client().Bucket(bg, "b"); err == nil {
+		if _, err := f.client().Bucket(bg, "bkt"); err == nil {
 			t.Errorf("%s: no error", failOn)
 		}
 	}
+	// A body that does not parse is an unreachable store, not a crash.
 	for _, resource := range []string{"tagging", "versioning", "lifecycle"} {
 		f := newFakeStore(t)
-		f.bucket["b"] = &fakeBucket{tags: map[string]string{"k": "v"}}
-		f.setBody("GET /b?"+resource, "<not-closed")
-		if _, err := f.client().Bucket(bg, "b"); !errors.Is(err, ErrBadResponse) {
+		f.bucket["bkt"] = &fakeBucket{tags: map[string]string{"k": "v"}}
+		f.setBody("GET /bkt/?"+resource, "<not-closed")
+		if _, err := f.client().Bucket(bg, "bkt"); !errors.Is(err, lifecycle.ErrUnreachable) {
 			t.Errorf("%s: %v", resource, err)
 		}
 	}
 }
 
 func TestCreateAndUpdateErrors(t *testing.T) {
-	p := BucketParams{Name: "b", Marker: "m", Versioning: true, Quota: 5, Rules: []Rule{{ID: "r", Days: 1}}}
-	for _, failOn := range []string{"PUT /b", "tagging", "versioning", "lifecycle", "set-bucket-quota"} {
+	p := BucketParams{Name: "bkt", Marker: "m", Versioning: true, Quota: 5, Rules: []Rule{{ID: "r", Days: 1}}}
+	for _, failOn := range []string{"PUT /bkt/", "tagging", "versioning", "lifecycle", "set-bucket-quota"} {
 		f := newFakeStore(t)
 		f.failOn = failOn
 		if err := f.client().CreateBucket(bg, p); err == nil {
@@ -145,17 +148,26 @@ func TestCreateAndUpdateErrors(t *testing.T) {
 	// Removing the lifecycle rules of a bucket that has none is fine, and a
 	// failure to remove them is not.
 	f := newFakeStore(t)
-	f.bucket["b"] = &fakeBucket{tags: map[string]string{MarkerTag: "m"}}
+	f.bucket["bkt"] = &fakeBucket{tags: map[string]string{MarkerTag: "m"}}
 	c := f.client()
-	q := BucketParams{Name: "b", Marker: "m"}
+	q := BucketParams{Name: "bkt", Marker: "m"}
 	cur := BucketState{Exists: true, Tags: map[string]string{MarkerTag: "m"}, Rules: []Rule{{ID: "r", Days: 1}}}
-	f.statusOn["DELETE /b?lifecycle"] = 404
+	f.statusOn["DELETE /bkt/?lifecycle"] = 404
 	if err := c.UpdateBucket(bg, q, cur); err != nil {
 		t.Errorf("rules already gone: %v", err)
 	}
-	delete(f.statusOn, "DELETE /b?lifecycle")
-	f.failOn = "DELETE /b?lifecycle"
+	delete(f.statusOn, "DELETE /bkt/?lifecycle")
+	f.failOn = "DELETE /bkt/?lifecycle"
 	if err := c.UpdateBucket(bg, q, cur); err == nil {
 		t.Error("a failing lifecycle delete was not an error")
+	}
+}
+
+// Tags the store would refuse are refused before the request.
+func TestInvalidTagsAreRefused(t *testing.T) {
+	f := newFakeStore(t)
+	err := f.client().putTags(bg, BucketParams{Name: "bkt", Marker: strings.Repeat("x", 300)}, nil)
+	if !errors.Is(err, ErrInvalidTag) || len(f.requests()) != 0 {
+		t.Errorf("err = %v, requests = %v", err, f.requests())
 	}
 }

@@ -50,6 +50,7 @@ type BucketAccessSpec struct {
 	// slash. Empty means the whole bucket.
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:XValidation:rule="!self.startsWith('/')",message="prefix must not start with /"
+	// +kubebuilder:validation:XValidation:rule="!self.matches('[*?$]')",message="prefix must not contain *, ? or $"
 	// +optional
 	Prefix string `json:"prefix,omitempty"`
 }

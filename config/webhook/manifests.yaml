@@ -30,6 +30,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-s3-craftainer-dev-v1alpha1-bucketaccess
+  failurePolicy: Fail
+  name: vbucketaccess-v1alpha1.kb.io
+  rules:
+  - apiGroups:
+    - s3.craftainer.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bucketaccesses
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-s3-craftainer-dev-v1alpha1-clusterobjectstore
   failurePolicy: Fail
   name: vclusterobjectstore-v1alpha1.kb.io

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/minio/minio-go/v7"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 
@@ -25,7 +25,7 @@ func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
 func TestNewRejectsWhatItCannotUse(t *testing.T) {
 	good := Target{Endpoint: "https://store.example.test:9000", AccessKey: "a", SecretKey: "s", Dial: plainDial}
 	for _, endpoint := range []string{
-		"", "http://store.example.test", "https://", "://x", "https://user:s3cret@store.example.test",
+		"", "http://store.example.test", "https://", "://x", "https://store.example.test/prefix", "https://user:s3cret@store.example.test",
 		"https://:s3cret@store.example.test", "https://store.example.test?x=1", "https://store.example.test#f", "ftp://store",
 	} {
 		tg := good
@@ -58,12 +58,12 @@ func TestNewRejectsWhatItCannotUse(t *testing.T) {
 }
 
 func TestNewDefaults(t *testing.T) {
-	tg := Target{Endpoint: "https://store.example.test:9000/prefix/", AccessKey: "a", SecretKey: "s", Dial: plainDial}
+	tg := Target{Endpoint: "https://store.example.test:9000/", AccessKey: "a", SecretKey: "s", Dial: plainDial}
 	c, err := New(tg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.region != "us-east-1" || c.base.Path != "/prefix" {
+	if c.region != "us-east-1" || c.base.Path != "" {
 		t.Errorf("region = %q, path = %q", c.region, c.base.Path)
 	}
 	tg.Region = "eu-west-1"
@@ -81,38 +81,66 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
-// Every request is signed with SigV4 for the s3 service and the store's
-// region, and the fake checks the signature by signing the request again. A
-// request outside the endpoint's path prefix would fail the same check.
+// Every request, admin and S3, is signed with SigV4 for the s3 service and the
+// store's region: the fake checks each signature with its own implementation
+// of the algorithm and fails the request when it differs.
 func TestRequestsAreSigned(t *testing.T) {
 	f := newFakeStore(t)
-	tg := f.target()
-	tg.Region = "us-east-1"
-	c, err := New(tg)
-	if err != nil {
+	c := f.client()
+	if _, err := c.Bucket(bg, "bk1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Bucket(context.Background(), "b1"); err != nil {
+	if err := c.CreateBucket(bg, BucketParams{Name: "bk1", Marker: "ns/bk1/uid", Versioning: true, Quota: 7}); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.CreateBucket(context.Background(), BucketParams{Name: "b1", Marker: "ns/b1/uid", Versioning: true}); err != nil {
+	if _, err := c.User(bg, "someone"); err != nil {
 		t.Fatal(err)
 	}
-	if !f.asked("PUT /b1?versioning=") {
+	if !f.asked("PUT /bk1", "versioning=") || !f.asked("PUT /rustfs/admin/v3/set-bucket-quota?bucket=bk1") {
 		t.Errorf("requests: %v", f.requests())
 	}
 }
 
-func TestSigningFailureIsReturned(t *testing.T) {
+// A store whose region differs from the one the signature names is refused by
+// the fake, which proves the region reaches the signature.
+func TestTheRegionReachesTheSignature(t *testing.T) {
+	f := newFakeStore(t)
+	f.lenient = true
+	tg := f.target()
+	tg.Region = "eu-west-1"
+	c, err := New(tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.User(bg, "someone"); !errors.Is(err, ErrConnAuth) {
+		t.Errorf("wrong region: %v", err)
+	}
+}
+
+func TestMinioClientCannotBeBuilt(t *testing.T) {
+	old := newMinio
+	t.Cleanup(func() { newMinio = old })
+	newMinio = func(string, *minio.Options) (*minio.Client, error) { return nil, errors.New("no") }
+	f := newFakeStore(t)
+	if _, err := New(f.target()); !errors.Is(err, ErrInvalidEndpoint) {
+		t.Errorf("New: %v", err)
+	}
+}
+
+func TestS3ErrorsAreMapped(t *testing.T) {
 	f := newFakeStore(t)
 	c := f.client()
-	boom := errors.New("cannot sign")
-	c.sign = func(context.Context, aws.Credentials, *http.Request, string, string, string, time.Time) error { return boom }
-	if _, err := c.do(context.Background(), call{method: http.MethodGet, path: "/b"}); !errors.Is(err, boom) {
-		t.Errorf("do: %v", err)
+	// A refusal of the S3 API is an *Error with the status and code.
+	f.statusOn["GET /bkt"] = http.StatusInternalServerError
+	f.bucket["bkt"] = &fakeBucket{tags: map[string]string{}}
+	_, err := c.Bucket(bg, "bkt")
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 500 || err.Error() != "the backend answered HTTP 500" {
+		t.Errorf("500: %v", err)
 	}
-	if len(f.requests()) != 0 {
-		t.Error("an unsigned request was sent")
+	f.statusOn["GET /bkt"] = http.StatusForbidden
+	if _, err := c.Bucket(bg, "bkt"); !errors.Is(err, ErrConnAuth) {
+		t.Errorf("403: %v", err)
 	}
 }
 
@@ -205,7 +233,7 @@ func TestTransportFailuresAreCategorised(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = c.Bucket(ctx, "b")
+		_, err = c.Bucket(ctx, "bkt")
 		if !errors.Is(err, lifecycle.ErrUnreachable) || !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -218,21 +246,21 @@ func TestTransportFailuresAreCategorised(t *testing.T) {
 	tg := f.target()
 	tg.CABundle = nil
 	c, _ := New(tg)
-	if _, err := c.Bucket(ctx, "b"); !errors.Is(err, ErrConnTLS) {
+	if _, err := c.Bucket(ctx, "bkt"); !errors.Is(err, ErrConnTLS) {
 		t.Errorf("unknown authority: %v", err)
 	}
 	// A certificate for another name: serverName decides.
 	tg = f.target()
 	tg.ServerName = "other.example.test"
 	c, _ = New(tg)
-	if _, err := c.Bucket(ctx, "b"); !errors.Is(err, ErrConnTLS) {
+	if _, err := c.Bucket(ctx, "bkt"); !errors.Is(err, ErrConnTLS) {
 		t.Errorf("wrong server name: %v", err)
 	}
 	// Not TLS at all.
 	tg = f.target()
 	tg.Endpoint = "https://" + strings.TrimPrefix(plainServer(t), "http://")
 	c, _ = New(tg)
-	if _, err := c.Bucket(ctx, "b"); !errors.Is(err, ErrConnTLS) {
+	if _, err := c.Bucket(ctx, "bkt"); !errors.Is(err, ErrConnTLS) {
 		t.Errorf("plain server: %v", err)
 	}
 }

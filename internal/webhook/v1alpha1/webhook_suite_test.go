@@ -81,6 +81,7 @@ var _ = BeforeSuite(func() {
 	Expect(SetupClusterObjectStoreWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupObjectStoreWebhookWithManager(mgr)).To(Succeed())
 	Expect(SetupBucketWebhookWithManager(mgr)).To(Succeed())
+	Expect(SetupBucketAccessWebhookWithManager(mgr)).To(Succeed())
 
 	go func() {
 		defer GinkgoRecover()

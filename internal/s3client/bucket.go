@@ -2,15 +2,14 @@ package s3client
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/xml"
 	"errors"
 	"maps"
-	"net/http"
-	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/minio/minio-go/v7"
+	mlifecycle "github.com/minio/minio-go/v7/pkg/lifecycle"
+	"github.com/minio/minio-go/v7/pkg/tags"
 )
 
 // MarkerTag is the bucket tag that records which claim created the bucket
@@ -59,97 +58,18 @@ func sortedRules(r []Rule) []Rule {
 // RulesEqual reports whether two rule lists hold the same rules, in any order.
 func RulesEqual(a, b []Rule) bool { return slices.Equal(sortedRules(a), sortedRules(b)) }
 
-func bucketPath(name string) string { return "/" + name }
-
-// sub is the query of a bucket sub-resource such as ?tagging.
-func sub(name string) url.Values { return url.Values{name: {""}} }
-
-type tag struct {
-	Key   string `xml:"Key"`
-	Value string `xml:"Value"`
-}
-
-type tagging struct {
-	XMLName xml.Name `xml:"Tagging"`
-	Tags    []tag    `xml:"TagSet>Tag"`
-}
-
-type versioning struct {
-	XMLName xml.Name `xml:"VersioningConfiguration"`
-	Status  string   `xml:"Status"`
-}
-
-type lifecycleRule struct {
-	ID     string `xml:"ID"`
-	Prefix string `xml:"Prefix,omitempty"`
-	Filter struct {
-		Prefix string `xml:"Prefix"`
-	} `xml:"Filter"`
-	Status     string `xml:"Status"`
-	Expiration struct {
-		Days int32 `xml:"Days"`
-	} `xml:"Expiration"`
-}
-
-type lifecycle struct {
-	XMLName xml.Name        `xml:"LifecycleConfiguration"`
-	Rules   []lifecycleRule `xml:"Rule"`
-}
-
-func decodeXML(data []byte, v any) error {
-	if err := xml.Unmarshal(data, v); err != nil {
-		return ErrBadResponse
-	}
-	return nil
-}
-
-// getXML reads a bucket sub-resource into v. A 404 leaves v empty: the
-// sub-resource has no configuration (the bucket's existence is checked
-// first).
-func (c *Client) getXML(ctx context.Context, bucket, resource string, v any) error {
-	data, err := c.do(ctx, call{method: http.MethodGet, path: bucketPath(bucket), query: sub(resource)})
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return decodeXML(data, v)
-}
-
-// putXML writes a bucket sub-resource. The SHA-256 checksum stands in for the
-// Content-MD5 older S3 implementations ask of tagging and lifecycle writes.
-func (c *Client) putXML(ctx context.Context, bucket, resource string, v any) error {
-	body, _ := xml.Marshal(v) // plain strings and integers always marshal
-	sum := sha256.Sum256(body)
-	_, err := c.do(ctx, call{
-		method: http.MethodPut, path: bucketPath(bucket), query: sub(resource), body: body, contentType: "application/xml",
-		header: map[string]string{
-			"X-Amz-Sdk-Checksum-Algorithm": "SHA256",
-			"X-Amz-Checksum-Sha256":        base64.StdEncoding.EncodeToString(sum[:]),
-		},
-	})
-	return err
-}
-
 // Bucket reads the bucket name: its existence, tags, versioning, lifecycle
 // rules and quota.
 func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
-	_, err := c.do(ctx, call{method: http.MethodHead, path: bucketPath(name)})
-	if errors.Is(err, ErrNotFound) {
-		return BucketState{}, nil
-	}
-	if err != nil {
+	ok, err := c.mc.BucketExists(ctx, name)
+	if err = c.s3(ctx, "HEAD bucket", err); err != nil || !ok {
 		return BucketState{}, err
 	}
 	st := BucketState{Exists: true, Tags: map[string]string{}}
-	var tags tagging
-	var ver versioning
-	var life lifecycle
 	for _, read := range []func() error{
-		func() error { return c.getXML(ctx, name, "tagging", &tags) },
-		func() error { return c.getXML(ctx, name, "versioning", &ver) },
-		func() error { return c.getXML(ctx, name, "lifecycle", &life) },
+		func() error { return c.readTags(ctx, name, &st) },
+		func() error { return c.readVersioning(ctx, name, &st) },
+		func() error { return c.readRules(ctx, name, &st) },
 		func() (err error) {
 			st.Quota, err = c.quota(ctx, name)
 			return err
@@ -159,28 +79,48 @@ func (c *Client) Bucket(ctx context.Context, name string) (BucketState, error) {
 			return BucketState{}, err
 		}
 	}
-	for _, t := range tags.Tags {
-		st.Tags[t.Key] = t.Value
+	return st, nil
+}
+
+// A 404 on a sub-resource means the bucket has no configuration of that kind.
+
+func (c *Client) readTags(ctx context.Context, name string, st *BucketState) error {
+	t, err := c.mc.GetBucketTagging(ctx, name)
+	if err = ignoreNotFound(c.s3(ctx, "GET tagging", err)); err != nil {
+		return err
 	}
-	st.Versioning = ver.Status == "Enabled"
-	for _, r := range life.Rules {
-		prefix := r.Filter.Prefix
+	if t != nil {
+		maps.Copy(st.Tags, t.ToMap())
+	}
+	return nil
+}
+
+func (c *Client) readVersioning(ctx context.Context, name string, st *BucketState) error {
+	v, err := c.mc.GetBucketVersioning(ctx, name)
+	st.Versioning = v.Enabled()
+	return c.s3(ctx, "GET versioning", err)
+}
+
+func (c *Client) readRules(ctx context.Context, name string, st *BucketState) error {
+	cfg, err := c.mc.GetBucketLifecycle(ctx, name)
+	if err = ignoreNotFound(c.s3(ctx, "GET lifecycle", err)); err != nil || cfg == nil {
+		return err
+	}
+	for _, r := range cfg.Rules {
+		prefix := r.RuleFilter.Prefix
 		if prefix == "" {
 			prefix = r.Prefix
 		}
-		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: r.Expiration.Days, Disabled: r.Status != "Enabled"})
+		st.Rules = append(st.Rules, Rule{ID: r.ID, Prefix: prefix, Days: int32(r.Expiration.Days), Disabled: r.Status != "Enabled"})
 	}
 	st.Rules = sortedRules(st.Rules)
-	return st, nil
+	return nil
 }
 
 // CreateBucket makes the bucket and applies the rest of the parameters.
 func (c *Client) CreateBucket(ctx context.Context, p BucketParams) error {
-	rq := call{method: http.MethodPut, path: bucketPath(p.Name)}
-	if p.ObjectLock {
-		rq.header = map[string]string{"X-Amz-Bucket-Object-Lock-Enabled": "true"}
-	}
-	if _, err := c.do(ctx, rq); err != nil {
+	err := c.mc.MakeBucket(ctx, p.Name, minio.MakeBucketOptions{Region: c.region, ObjectLocking: p.ObjectLock})
+	if err := c.s3(ctx, "PUT bucket", err); err != nil {
 		return err
 	}
 	return c.configure(ctx, p, BucketState{})
@@ -198,11 +138,7 @@ func (c *Client) configure(ctx context.Context, p BucketParams, cur BucketState)
 		steps = append(steps, func() error { return c.putTags(ctx, p, cur.Tags) })
 	}
 	if cur.Versioning != p.Versioning {
-		status := "Suspended"
-		if p.Versioning {
-			status = "Enabled"
-		}
-		steps = append(steps, func() error { return c.putXML(ctx, p.Name, "versioning", versioning{Status: status}) })
+		steps = append(steps, func() error { return c.putVersioning(ctx, p) })
 	}
 	if !RulesEqual(cur.Rules, p.Rules) {
 		steps = append(steps, func() error { return c.putRules(ctx, p) })
@@ -224,32 +160,36 @@ func (c *Client) putTags(ctx context.Context, p BucketParams, existing map[strin
 		all = map[string]string{}
 	}
 	all[MarkerTag] = p.Marker
-	var t tagging
-	for _, k := range slices.Sorted(maps.Keys(all)) {
-		t.Tags = append(t.Tags, tag{Key: k, Value: all[k]})
+	t, err := tags.NewTags(all, false)
+	if err != nil {
+		return ErrInvalidTag
 	}
-	return c.putXML(ctx, p.Name, "tagging", t)
+	return c.s3(ctx, "PUT tagging", c.mc.SetBucketTagging(ctx, p.Name, t))
 }
 
+func (c *Client) putVersioning(ctx context.Context, p BucketParams) error {
+	if p.Versioning {
+		return c.s3(ctx, "PUT versioning", c.mc.EnableVersioning(ctx, p.Name))
+	}
+	return c.s3(ctx, "PUT versioning", c.mc.SuspendVersioning(ctx, p.Name))
+}
+
+// putRules sets the lifecycle rules; no rules removes the configuration.
 func (c *Client) putRules(ctx context.Context, p BucketParams) error {
-	if len(p.Rules) == 0 {
-		_, err := c.do(ctx, call{method: http.MethodDelete, path: bucketPath(p.Name), query: sub("lifecycle")})
-		return ignoreNotFound(err)
-	}
-	var l lifecycle
+	cfg := mlifecycle.NewConfiguration()
 	for _, r := range sortedRules(p.Rules) {
-		lr := lifecycleRule{ID: r.ID, Status: "Enabled"}
-		lr.Filter.Prefix = r.Prefix
-		lr.Expiration.Days = r.Days
-		l.Rules = append(l.Rules, lr)
+		cfg.Rules = append(cfg.Rules, mlifecycle.Rule{
+			ID: r.ID, Status: "Enabled", RuleFilter: mlifecycle.Filter{Prefix: r.Prefix},
+			Expiration: mlifecycle.Expiration{Days: mlifecycle.ExpirationDays(r.Days)},
+		})
 	}
-	return c.putXML(ctx, p.Name, "lifecycle", l)
+	return ignoreNotFound(c.s3(ctx, "PUT lifecycle", c.mc.SetBucketLifecycle(ctx, p.Name, cfg)))
 }
 
 // DeleteBucket deletes an empty bucket; one that is gone is success. A bucket
 // that holds objects is ErrBucketNotEmpty: the operator never deletes objects.
 func (c *Client) DeleteBucket(ctx context.Context, name string) error {
-	_, err := c.do(ctx, call{method: http.MethodDelete, path: bucketPath(name)})
+	err := c.s3(ctx, "DELETE bucket", c.mc.RemoveBucket(ctx, name))
 	var apiErr *Error
 	if errors.As(err, &apiErr) && apiErr.Code == "BucketNotEmpty" {
 		return ErrBucketNotEmpty

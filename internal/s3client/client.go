@@ -1,8 +1,8 @@
 // Package s3client is the object store backend client (NR4). It talks to
 // RustFS's plain-JSON admin API under /rustfs/admin/v3 for users, policies,
-// service accounts and bucket quotas, and to its S3 API for buckets, with
-// every request signed with AWS Signature Version 4. MinIO's /minio/admin
-// surface (encrypted payloads, AGPL client library) is not used.
+// service accounts and bucket quotas, signed with minio-go's SigV4 signer, and
+// to its S3 API for buckets through minio-go/v7. MinIO's /minio/admin surface
+// (encrypted payloads, AGPL madmin-go) is not used.
 //
 // A Client verifies the store's certificate chain and host name, never
 // follows a redirect, and dials only through the egress policy it is given.
@@ -27,8 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/signer"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
@@ -53,6 +54,9 @@ var (
 	// ErrBucketNotEmpty means a bucket still holds objects; the operator never
 	// deletes objects.
 	ErrBucketNotEmpty = errors.New("the bucket is not empty")
+	// ErrInvalidTag means the bucket's tags, with the ownership marker, are not
+	// valid S3 tags.
+	ErrInvalidTag = errors.New("the bucket tags are not valid")
 	// ErrBadResponse means the store answered 2xx with a body that does not
 	// parse.
 	ErrBadResponse = errors.New("the backend answered with an unexpected body")
@@ -140,27 +144,32 @@ type Target struct {
 	Dial egress.DialFunc
 }
 
-// signFunc signs a request; v4.Signer.SignHTTP in production. A variable so a
-// test can make signing fail.
-type signFunc func(ctx context.Context, creds aws.Credentials, r *http.Request, payloadHash, service, region string, t time.Time) error
+// signFunc signs a request; signer.SignV4 in production.
+type signFunc func(req http.Request, accessKey, secretKey, sessionToken, location string) *http.Request
 
 // Client is one store. It is safe for concurrent use.
 type Client struct {
 	base   *url.URL
 	hc     *http.Client
-	creds  aws.Credentials
+	mc     *minio.Client
+	access string
+	secret string
 	region string
-	now    func() time.Time
 	sign   signFunc
 }
+
+// newMinio builds the S3 client; a variable so a test can make it fail.
+var newMinio = minio.New
 
 // maxBody bounds what is read of any answer.
 const maxBody = 1 << 20
 
-// New validates the target and builds its Client. It makes no request.
+// New validates the target and builds its Client. It makes no request. The
+// endpoint has no path: both APIs are served at its root.
 func New(t Target) (*Client, error) {
 	u, err := url.Parse(t.Endpoint)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		strings.Trim(u.Path, "/") != "" {
 		// err is dropped: a url.Error would echo the URL and its userinfo.
 		return nil, ErrInvalidEndpoint
 	}
@@ -197,14 +206,18 @@ func New(t Target) (*Client, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	signer := v4.NewSigner()
+	u.Path = ""
+	// MaxRetries 1 turns minio-go's retries off: the controller retries with
+	// backoff. Path-style addressing, because the store has no wildcard DNS.
+	mc, err := newMinio(u.Host, &minio.Options{
+		Creds: credentials.NewStaticV4(t.AccessKey, t.SecretKey, ""), Secure: true, Transport: tr, Region: region,
+		BucketLookup: minio.BucketLookupPath, MaxRetries: 1,
+	})
+	if err != nil {
+		return nil, ErrInvalidEndpoint
+	}
 	return &Client{
-		base: u, hc: hc, region: region, now: time.Now,
-		creds: aws.Credentials{AccessKeyID: t.AccessKey, SecretAccessKey: t.SecretKey},
-		sign: func(ctx context.Context, creds aws.Credentials, r *http.Request, hash, service, region string, at time.Time) error {
-			return signer.SignHTTP(ctx, creds, r, hash, service, region, at)
-		},
+		base: u, hc: hc, mc: mc, access: t.AccessKey, secret: t.SecretKey, region: region, sign: signer.SignV4,
 	}, nil
 }
 
@@ -214,13 +227,12 @@ type call struct {
 	query        url.Values
 	body         []byte
 	contentType  string
-	header       map[string]string
 }
 
-// do sends the request, signed, and returns the body of a 2xx answer.
+// do sends the admin request, signed, and returns the body of a 2xx answer.
 func (c *Client) do(ctx context.Context, rq call) ([]byte, error) {
 	u := *c.base
-	u.Path += rq.path
+	u.Path = rq.path
 	u.RawQuery = rq.query.Encode()
 	var body io.ReadCloser = http.NoBody
 	if len(rq.body) > 0 {
@@ -232,34 +244,50 @@ func (c *Client) do(ctx context.Context, rq call) ([]byte, error) {
 	if rq.contentType != "" {
 		req.Header.Set("Content-Type", rq.contentType)
 	}
-	for k, v := range rq.header {
-		req.Header.Set(k, v)
-	}
 	sum := sha256.Sum256(rq.body)
-	hash := hex.EncodeToString(sum[:])
-	req.Header.Set("X-Amz-Content-Sha256", hash)
-	if err := c.sign(ctx, c.creds, req, hash, "s3", c.region, c.now()); err != nil {
-		return nil, err
-	}
+	req.Header.Set("X-Amz-Content-Sha256", hex.EncodeToString(sum[:]))
+	req = c.sign(*req, c.access, c.secret, "", c.region)
 	status, data, err := c.exchange(req)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "cannot reach the backend", "method", rq.method, "path", rq.path)
-		return nil, &connError{category: classify(err), cause: err}
+		return nil, c.unreachable(ctx, rq.method+" "+rq.path, err)
 	}
 	if status/100 == 2 {
 		return data, nil
 	}
-	e := &Error{Status: status, Code: errorCode(data)}
+	return nil, c.refused(ctx, rq.method+" "+rq.path, status, errorCode(data), snippet(data))
+}
+
+// unreachable logs a transport failure and returns its fixed category.
+func (c *Client) unreachable(ctx context.Context, op string, err error) error {
+	log.FromContext(ctx).Error(err, "cannot reach the backend", "request", op)
+	return &connError{category: classify(err), cause: err}
+}
+
+// refused logs a non-2xx answer and returns it as an *Error; 401 and 403 are
+// an authentication failure of an unreachable store.
+func (c *Client) refused(ctx context.Context, op string, status int, code, detail string) error {
+	e := &Error{Status: status, Code: code}
 	if status == http.StatusNotFound {
-		log.FromContext(ctx).V(1).Info("the backend found nothing", "method", rq.method, "path", rq.path, "code", e.Code)
+		log.FromContext(ctx).V(1).Info("the backend found nothing", "request", op, "code", code)
 	} else {
-		log.FromContext(ctx).Error(e, "the backend refused the request", "method", rq.method, "path", rq.path,
-			"code", e.Code, "body", snippet(data))
+		log.FromContext(ctx).Error(e, "the backend refused the request", "request", op, "code", code, "detail", detail)
 	}
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return nil, &connError{category: ErrConnAuth, cause: e}
+		return &connError{category: ErrConnAuth, cause: e}
 	}
-	return nil, e
+	return e
+}
+
+// s3 turns the error of a minio-go call into the errors of this package.
+func (c *Client) s3(ctx context.Context, op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var resp minio.ErrorResponse
+	if errors.As(err, &resp) {
+		return c.refused(ctx, op, resp.StatusCode, resp.Code, resp.Message)
+	}
+	return c.unreachable(ctx, op, err)
 }
 
 func (c *Client) exchange(req *http.Request) (int, []byte, error) {
