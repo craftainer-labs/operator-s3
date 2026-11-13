@@ -55,7 +55,18 @@ finalizers, `deletionPolicy`, `managementPolicies`, drift polling, the
   `prefix`), and one service account per credential generation. The binding
   Secret (type `servicebinding.io/s3`) holds the service account's keys.
   Rotation issues the next service account first and deletes the previous one
-  after `gracePeriod`.
+  after `gracePeriod`. A change of `access` or `prefix` updates the policy and
+  the Secret's fields but keeps the key in use; its secret key is set again only
+  when the Secret holds no valid one. The access waits (and is reconciled again
+  when the `Bucket` changes) until its `Bucket` is `Ready` and not being
+  deleted. Deleting it removes the service accounts it derived (never another
+  account under the user's name), the user, and the policies it named, even
+  when the user is already gone.
+
+Each store's RustFS client is kept between reconciles (connections reused, a
+bounded number idle), keyed by the store and rebuilt when the store, its
+credentials, its CA bundle or its proxy change; it is dropped when the store is
+deleted or unused for ten minutes.
 
 The admin API is RustFS's `/rustfs/admin/v3`, signed with SigV4; MinIO is not
 supported. A store's `endpoint` is an `https` URL without a path.
@@ -66,7 +77,13 @@ supported. A store's `endpoint` is an `https` URL without a path.
 | --- | --- | --- | --- |
 | `EGRESS_MODE` | `--egress-mode` | `strict` | `strict` refuses connections to loopback, link-local, cloud metadata and private ranges; `allow-private` refuses all but the private ranges, for stores on private addresses |
 | `DEFAULT_DATA_DELETION_POLICY` | `--default-data-deletion-policy` | `Retain` | the `deletionPolicy` a new `Bucket` is pinned to when its spec leaves it unset |
-| `POD_NAMESPACE` | `--operator-namespace` | the pod's namespace | where a `ClusterObjectStore`'s admin Secret and CA bundle are read from |
+| `POD_NAMESPACE` | `--operator-namespace` | the pod's namespace | where a `ClusterObjectStore`'s admin Secret and CA bundle are read from; startup fails when neither this nor the pod's service account names a namespace |
+
+In the Helm chart the first two are the values `egressMode` and
+`defaultDataDeletionPolicy` (defaults `strict` and `Retain`; `config/manager`
+has the same defaults). Set `egressMode: allow-private` when the store, or a
+proxy in front of it, is on a private address, which is the usual case for a
+RustFS Service inside the cluster: with `strict` the operator cannot reach it.
 
 Credentials in a URL (`https://user:pw@host`) are rejected in `endpoint` and
 `proxyURL`; credentials come only from Secret references. Conditions and Events
@@ -96,8 +113,10 @@ A deletion blocked this way keeps the finalizer, by design.
 
 - **NO3b-2:** a real RustFS lane (a TLS RustFS service in the devcontainer and
   in CI) to check the admin routes, the SigV4 signatures, the 404 versus 500
-  answers for a missing object, the quota body, tagging and lifecycle, and that a
-  policy confines a key to its bucket and prefix. Policy document drift is not
+  answers for a missing object, the quota body (and whether a bucket without a
+  quota answers 404, which the client reads as no quota), the canned policy list,
+  tagging and lifecycle, and that a policy confines a key to its bucket and
+  prefix. Policy document drift is not
   detected, only which policy is attached.
 - **NOX-probe:** the store kinds do not probe their server: `ServerStatus`
   (`serverVersion`, `lastProbeTime`, the `Ready` and `ServerReachable`

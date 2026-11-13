@@ -222,14 +222,37 @@ func (m *memStore) DeleteKey(_ context.Context, key string) error {
 	return nil
 }
 
-func (m *memStore) DeleteAccess(_ context.Context, user string, policies []string) error {
-	if err := m.enter("DeleteAccess " + user + " " + strings.Join(policies, ",")); err != nil {
+func (m *memStore) OwnedPolicies(_ context.Context, user string) ([]string, error) {
+	if err := m.enter("OwnedPolicies " + user); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var owned []string
+	for name := range m.docs {
+		if s3client.OwnsPolicy(user, name) {
+			owned = append(owned, name)
+		}
+	}
+	slices.Sort(owned)
+	return owned, nil
+}
+
+func (m *memStore) DeleteAccess(_ context.Context, user string, keys []string) error {
+	if err := m.enter("DeleteAccess " + user + " " + strings.Join(keys, ",")); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.users, user)
-	m.keys = map[string]string{}
+	for _, k := range keys {
+		delete(m.keys, k)
+	}
+	for name := range m.docs {
+		if s3client.OwnsPolicy(user, name) {
+			delete(m.docs, name)
+		}
+	}
 	return nil
 }
 

@@ -162,25 +162,26 @@ func (c *Client) IssueKey(ctx context.Context, user, key, secret string) error {
 		map[string]string{"targetUser": user, "accessKey": key, "secretKey": secret})
 }
 
-// ListKeys returns the access keys of the service accounts of user.
-func (c *Client) ListKeys(ctx context.Context, user string) ([]string, error) {
-	data, err := c.admin(ctx, http.MethodGet, "/list-service-accounts", url.Values{"user": {user}}, nil)
+// OwnedPolicies returns the policies of the store that PolicyName gave to
+// user, whether or not they are still attached to it: the user may be gone
+// while its policy is not.
+func (c *Client) OwnedPolicies(ctx context.Context, user string) ([]string, error) {
+	data, err := c.admin(ctx, http.MethodGet, "/list-canned-policies", nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	var list struct {
-		Accounts []struct {
-			AccessKey string `json:"accessKey"`
-		} `json:"accounts"`
-	}
-	if err := decodeJSON(data, &list); err != nil {
+	var all map[string]json.RawMessage
+	if err := decodeJSON(data, &all); err != nil {
 		return nil, err
 	}
-	keys := make([]string, len(list.Accounts))
-	for i, a := range list.Accounts {
-		keys[i] = a.AccessKey
+	var owned []string
+	for name := range all {
+		if OwnsPolicy(user, name) {
+			owned = append(owned, name)
+		}
 	}
-	return keys, nil
+	slices.Sort(owned)
+	return owned, nil
 }
 
 // DeleteKey deletes a service account; one that is gone is success.
@@ -192,13 +193,12 @@ func (c *Client) DeleteKey(ctx context.Context, key string) error {
 	return ignoreNotFound(c.run(ctx, http.MethodDelete, "/delete-service-account", url.Values{"accessKey": {key}}, nil))
 }
 
-// DeleteAccess deletes the service accounts and the user, then the policies
-// PolicyName gave to the user among policies. Every step is safe to repeat.
-func (c *Client) DeleteAccess(ctx context.Context, user string, policies []string) error {
-	keys, err := c.ListKeys(ctx, user)
-	if err != nil {
-		return err
-	}
+// DeleteAccess deletes the given service accounts (the caller derives them
+// from the claim, so no other account of the user is touched) and the user,
+// then every policy PolicyName gave to the user, found in the store so that a
+// policy outlives neither the user nor an earlier failed attempt. Every step
+// is safe to repeat.
+func (c *Client) DeleteAccess(ctx context.Context, user string, keys []string) error {
 	for _, key := range keys {
 		if err := c.DeleteKey(ctx, key); err != nil {
 			return err
@@ -207,19 +207,26 @@ func (c *Client) DeleteAccess(ctx context.Context, user string, policies []strin
 	if err := ignoreNotFound(c.run(ctx, http.MethodDelete, "/remove-user", url.Values{"accessKey": {user}}, nil)); err != nil {
 		return err
 	}
+	policies, err := c.OwnedPolicies(ctx, user)
+	if err != nil {
+		return err
+	}
 	for _, policy := range policies {
-		if OwnsPolicy(user, policy) {
-			if err := c.removePolicy(ctx, policy); err != nil {
-				return err
-			}
+		if err := c.removePolicy(ctx, policy); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// quota reads the hard quota of a bucket in bytes; 0 is none.
+// quota reads the hard quota of a bucket in bytes; 0 is none, and so is a 404.
 func (c *Client) quota(ctx context.Context, bucket string) (int64, error) {
 	data, err := c.admin(ctx, http.MethodGet, "/get-bucket-quota", url.Values{"bucket": {bucket}}, nil)
+	if errors.Is(err, ErrNotFound) {
+		// No quota set. Whether RustFS answers 404 for that is to be confirmed
+		// against a real store (NO3b-2); a 200 with quota 0 reads the same.
+		return 0, nil
+	}
 	if err != nil {
 		return 0, err
 	}

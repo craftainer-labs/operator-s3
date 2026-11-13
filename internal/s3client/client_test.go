@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -300,5 +301,43 @@ func TestTimeoutsAndTruncatedBodies(t *testing.T) {
 	c.hc.Timeout = time.Minute
 	if _, err := c.do(context.Background(), call{method: http.MethodGet, path: "/cut"}); !errors.Is(err, lifecycle.ErrUnreachable) {
 		t.Errorf("cut: %v", err)
+	}
+}
+
+// KeepAlive reuses the connection between requests, and CloseIdleConnections
+// ends it; without KeepAlive every request dials.
+func TestKeepAliveReusesConnections(t *testing.T) {
+	f := newFakeStore(t)
+	for _, keep := range []bool{false, true} {
+		var dials atomic.Int32
+		tg := f.target()
+		tg.KeepAlive = keep
+		tg.Dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials.Add(1)
+			return plainDial(ctx, network, addr)
+		}
+		c, err := New(tg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			if _, err := c.KeyExists(context.Background(), "K"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want := int32(3)
+		if keep {
+			want = 1
+		}
+		if dials.Load() != want {
+			t.Errorf("KeepAlive %t: %d dials, want %d", keep, dials.Load(), want)
+		}
+		c.CloseIdleConnections()
+		if _, err := c.KeyExists(context.Background(), "K"); err != nil {
+			t.Fatal(err)
+		}
+		if dials.Load() != want+1 {
+			t.Errorf("KeepAlive %t: %d dials after closing, want %d", keep, dials.Load(), want+1)
+		}
 	}
 }

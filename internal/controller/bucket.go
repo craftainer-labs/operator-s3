@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -164,7 +163,3 @@ func (e *bucketExternal) Update(ctx context.Context, spec s3v1alpha1.BucketSpec,
 func (e *bucketExternal) Delete(ctx context.Context, _ s3client.BucketState) error {
 	return e.be.store.DeleteBucket(ctx, e.name)
 }
-
-// objectKeyOK reports whether an access prefix is a plain key prefix: no
-// wildcard or policy variable could widen the policy built from it.
-func objectKeyOK(prefix string) bool { return !strings.ContainsAny(prefix, "*?$") }

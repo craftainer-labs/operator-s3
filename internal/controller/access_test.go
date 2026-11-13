@@ -115,17 +115,27 @@ func TestAccessLifecycleAndRotation(t *testing.T) {
 	}
 	h.rec.AssertEvent(t, "Normal", conditions.EventRotationFinished, "")
 
-	// Drift: the access level changed; the new policy is applied and the active
-	// key's secret is set again.
+	// Drift: the access level changed. The new policy is applied and the active
+	// key keeps its secret: a change of policy does not invalidate credentials.
+	activeSecret := bindingSecret(h, a)["secretAccessKey"]
 	h.patch(a, func() { a.Spec.Access = s3v1alpha1.AccessReadWrite })
 	h.fake.reset()
 	h.reconcileOK(ar, a)
-	h.fake.want(t, "ApplyAccess "+user, "IssueKey "+user+" "+key1)
+	h.fake.want(t, "ApplyAccess "+user)
+	h.fake.wantNot(t, "IssueKey")
 	if got := h.fake.docs[h.fake.users[user].policies[0]]; !strings.Contains(got, "PutObject") {
 		t.Errorf("policy = %s", got)
 	}
-	if bindingSecret(h, a)["accessKeyId"] != key1 {
-		t.Error("the Secret does not hold the active key")
+	if got := bindingSecret(h, a); got["accessKeyId"] != key1 || got["secretAccessKey"] != activeSecret || h.fake.keys[key1] != activeSecret {
+		t.Errorf("the credentials changed with the policy: %v", got)
+	}
+	// The fields that follow the spec are refreshed in the Secret all the same.
+	h.patch(a, func() { a.Spec.Prefix = "other/" })
+	h.fake.reset()
+	h.reconcileOK(ar, a)
+	h.fake.wantNot(t, "IssueKey")
+	if got := bindingSecret(h, a); got["prefix"] != "other/" || got["secretAccessKey"] != activeSecret {
+		t.Errorf("binding after a prefix change = %v", got)
 	}
 
 	// A key that was deleted behind our back is issued again.
@@ -134,11 +144,15 @@ func TestAccessLifecycleAndRotation(t *testing.T) {
 	h.reconcileOK(ar, a)
 	h.fake.want(t, "IssueKey "+user+" "+key1)
 
-	// Deleting removes the user, its keys and its policies.
+	// Deleting removes the user, the keys derived from the claim and the
+	// policies.
 	h.must(env.Client.Delete(context.Background(), a))
 	h.fake.reset()
 	h.reconcileOK(ar, a)
-	h.fake.want(t, "DeleteAccess "+user+" "+user+"-")
+	h.fake.want(t, "DeleteAccess "+user+" "+key0+","+key1+","+s3client.AccessKey(string(a.UID), 2))
+	if len(h.fake.docs) != 0 {
+		t.Errorf("policies = %v", h.fake.docs)
+	}
 	if !h.gone(a) {
 		t.Error("the claim is still there")
 	}
@@ -197,9 +211,27 @@ func TestAccessNeedsAUsableBucket(t *testing.T) {
 	if err := h.reconcile(ar, a3); !errors.Is(err, ErrBucketNotUsable) || !strings.Contains(err.Error(), "no bucket yet") {
 		t.Errorf("bucket without a name: %v", err)
 	}
+	// A name the Bucket records before its bucket exists is not enough: the
+	// Bucket has to be Ready.
+	early := h.bucket("early", nil)
+	early.Status.ExternalName = "named-early"
+	h.must(env.Client.Status().Update(context.Background(), early))
+	a4 := h.access("not-ready", early.Name, nil)
+	if err := h.reconcile(ar, a4); !errors.Is(err, ErrBucketNotUsable) || !strings.Contains(err.Error(), "not Ready") {
+		t.Errorf("bucket that is not Ready: %v", err)
+	}
+	h.fake.wantNot(t, "ApplyAccess")
+
 	h.reconcileOK(br, fresh)
 	h.reconcileOK(ar, a3)
 	h.fake.want(t, "ApplyAccess")
+
+	// A Bucket that is being deleted is not usable.
+	a5 := h.access("too-late", fresh.Name, nil)
+	h.must(env.Client.Delete(context.Background(), fresh))
+	if err := h.reconcile(ar, a5); !errors.Is(err, ErrBucketNotUsable) || !strings.Contains(err.Error(), "being deleted") {
+		t.Errorf("bucket being deleted: %v", err)
+	}
 
 	// Deleting an access does not need the Bucket (it may be gone first).
 	h.must(env.Client.Delete(context.Background(), a))
@@ -267,6 +299,7 @@ func accessExt(t *testing.T, store *memStore) *accessExternal {
 	e := newAccessExternal(be, claim)
 	e.bucket = "bkt"
 	e.persist = func(context.Context) error { return nil }
+	e.held = func(context.Context) (map[string][]byte, error) { return nil, nil }
 	return e
 }
 
@@ -424,5 +457,116 @@ func TestNewAccessExternalKeepsTheRecordedName(t *testing.T) {
 	claim.SetExternalName("kept")
 	if e = newAccessExternal(&backend{}, claim); e.user != "kept" {
 		t.Errorf("user = %q", e.user)
+	}
+}
+
+// Update keeps the secret key of the active service account when the binding
+// Secret holds it, and issues the active key again only when nothing valid is
+// held.
+func TestAccessUpdateKeepsAValidKey(t *testing.T) {
+	ctx := context.Background()
+	spec := s3v1alpha1.BucketAccessSpec{Prefix: "new/"}
+	key := s3client.AccessKey("uid-1", 0)
+	live := AccessState{Key: key, KeyExists: true}
+	held := map[string][]byte{"accessKeyId": []byte(key), "secretAccessKey": []byte("held-secret")}
+
+	cases := map[string]struct {
+		held   map[string][]byte
+		cur    AccessState
+		issued bool
+	}{
+		"valid":            {held, live, false},
+		"another key":      {map[string][]byte{"accessKeyId": []byte("OTHER"), "secretAccessKey": []byte("s")}, live, true},
+		"no secret":        {map[string][]byte{"accessKeyId": []byte(key)}, live, true},
+		"no Secret at all": {nil, live, true},
+		"key gone":         {held, AccessState{Key: key}, true},
+	}
+	for name, tc := range cases {
+		store := newMemStore()
+		e := accessExt(t, store)
+		e.claim.Spec = spec
+		e.held = func(context.Context) (map[string][]byte, error) { return tc.held, nil }
+		data, err := e.Update(ctx, spec, tc.cur)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		issued := strings.Contains(store.joined(), "IssueKey")
+		if issued != tc.issued || string(data["prefix"]) != "new/" || string(data["accessKeyId"]) != key {
+			t.Errorf("%s: issued = %t, data = %v", name, issued, data)
+		}
+		if !tc.issued && string(data["secretAccessKey"]) != "held-secret" {
+			t.Errorf("%s: the held secret key was replaced", name)
+		}
+		if tc.issued && string(data["secretAccessKey"]) == "held-secret" {
+			t.Errorf("%s: the key was not issued again", name)
+		}
+	}
+
+	e := accessExt(t, newMemStore())
+	e.held = func(context.Context) (map[string][]byte, error) { return nil, errStore }
+	if _, err := e.Update(ctx, spec, live); !errors.Is(err, errStore) {
+		t.Errorf("a failed read of the Secret: %v", err)
+	}
+}
+
+// Delete names only the keys the claim derives, up to the next sequence.
+func TestAccessDeleteNamesTheDerivedKeys(t *testing.T) {
+	store := newMemStore()
+	e := accessExt(t, store)
+	e.claim.Status.Rotation = &common.RotationStatus{Sequence: 2}
+	if err := e.Delete(context.Background(), AccessState{}); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for seq := int64(0); seq <= 3; seq++ {
+		keys = append(keys, s3client.AccessKey("uid-1", seq))
+	}
+	store.want(t, "DeleteAccess "+e.user+" "+strings.Join(keys, ","))
+}
+
+// A policy outlives its user: while the claim is deleted it is still found and
+// removed.
+func TestAccessDeleteFindsPoliciesOfAGoneUser(t *testing.T) {
+	ctx := context.Background()
+	spec := s3v1alpha1.BucketAccessSpec{}
+	store := newMemStore()
+	e := accessExt(t, store)
+	name, _, _ := e.policy(spec)
+	store.docs[name] = "{}"
+	store.docs["foreign"] = "{}"
+
+	// Not being deleted: a missing user is a missing access.
+	e.claim.SetExternalID("key")
+	if obs, err := e.Observe(ctx, spec); err != nil || obs.Exists {
+		t.Errorf("live claim: %+v, %v", obs, err)
+	}
+	// Being deleted but never created anything: nothing to look for.
+	now := metav1.Now()
+	e.claim.DeletionTimestamp = &now
+	e.claim.SetExternalID("")
+	store.reset()
+	if obs, err := e.Observe(ctx, spec); err != nil || obs.Exists {
+		t.Errorf("claim without a create: %+v, %v", obs, err)
+	}
+	store.wantNot(t, "OwnedPolicies")
+
+	e.claim.SetExternalID("key")
+	obs, err := e.Observe(ctx, spec)
+	if err != nil || !obs.Exists {
+		t.Fatalf("claim being deleted: %+v, %v", obs, err)
+	}
+	if err := e.Delete(ctx, obs.Current); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.docs[name]; ok || store.docs["foreign"] == "" {
+		t.Errorf("policies = %v", store.docs)
+	}
+	// Nothing left: the access is gone.
+	if obs, err := e.Observe(ctx, spec); err != nil || obs.Exists {
+		t.Errorf("nothing left: %+v, %v", obs, err)
+	}
+	store.fail["OwnedPolicies"] = errStore
+	if _, err := e.Observe(ctx, spec); !errors.Is(err, errStore) {
+		t.Errorf("a failed list: %v", err)
 	}
 }

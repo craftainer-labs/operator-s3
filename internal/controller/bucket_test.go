@@ -351,7 +351,7 @@ func TestBucketReadFailures(t *testing.T) {
 	}
 }
 
-// storeSpec reads a namespaced store from the claim's namespace and a cluster
+// fetchStore reads a namespaced store from the claim's namespace and a cluster
 // store by name.
 func TestStoreSpecOfBothKinds(t *testing.T) {
 	h := newHarness(t, common.DeletionRetain, nil)
@@ -361,15 +361,15 @@ func TestStoreSpecOfBothKinds(t *testing.T) {
 	ns.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "local-admin"}
 	h.must(env.Client.Create(context.Background(), ns))
 
-	got, err := h.cfg.storeSpec(context.Background(), h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "local"})
-	if err != nil || got.Region != "eu-west-1" {
+	got, err := h.cfg.fetchStore(context.Background(), h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "local"})
+	if err != nil || got.spec.Region != "eu-west-1" || got.uid != ns.UID || got.uid == "" {
 		t.Errorf("namespaced: %+v, %v", got, err)
 	}
-	got, err = h.cfg.storeSpec(context.Background(), h.ns, h.ref())
-	if err != nil || got.Endpoint != "https://rustfs.example.test:9000" {
+	got, err = h.cfg.fetchStore(context.Background(), h.ns, h.ref())
+	if err != nil || got.spec.Endpoint != "https://rustfs.example.test:9000" {
 		t.Errorf("cluster: %+v, %v", got, err)
 	}
-	if _, err = h.cfg.storeSpec(context.Background(), h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "absent"}); err == nil {
+	if _, err = h.cfg.fetchStore(context.Background(), h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "absent"}); err == nil {
 		t.Error("a missing namespaced store was found")
 	}
 }

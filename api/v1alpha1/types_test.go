@@ -148,3 +148,13 @@ func TestBucketAccessAccessors(t *testing.T) {
 	a.SetRotationStatus(common.RotationStatus{Active: "g1", Sequence: 2})
 	g.Expect(a.GetRotationStatus()).To(Equal(common.RotationStatus{Active: "g1", Sequence: 2}))
 }
+
+func TestPrefixOK(t *testing.T) {
+	g := NewWithT(t)
+	for _, ok := range []string{"", "team/a/", "a b", "a-b_c.d"} {
+		g.Expect(PrefixOK(ok)).To(BeTrue(), ok)
+	}
+	for _, bad := range []string{"*", "a/*", "a?b", "${aws:username}/", "$"} {
+		g.Expect(PrefixOK(bad)).To(BeFalse(), bad)
+	}
+}

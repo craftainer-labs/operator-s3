@@ -50,6 +50,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testCfg = cfg
+	// The operator needs its namespace; the pod's service account is not here.
+	_ = os.Setenv("POD_NAMESPACE", "operator-test")
 	code := m.Run()
 	if err := env.Stop(); err != nil {
 		fmt.Fprintln(os.Stderr, "cannot stop envtest:", err)
@@ -323,23 +325,24 @@ func TestControllerSettings(t *testing.T) {
 	old := serviceAccountNamespaceFile
 	t.Cleanup(func() { serviceAccountNamespaceFile = old })
 
-	// Defaults: strict egress, Retain, and no namespace without a service account.
+	// Without an operator namespace (no flag, no environment, no service
+	// account) startup fails.
 	serviceAccountNamespaceFile = filepath.Join(t.TempDir(), "missing")
 	s, err := parseFlags(nil, io.Discard)
 	g.Expect(err).NotTo(HaveOccurred())
-	cs, err := s.controllerSettings()
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(cs.deletion).To(Equal(common.DeletionRetain))
-	g.Expect(cs.namespace).To(BeEmpty())
-	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+	_, err = s.controllerSettings()
+	g.Expect(err).To(MatchError(ErrNoOperatorNamespace))
 
 	// The pod's namespace comes from the service account.
 	nsFile := filepath.Join(t.TempDir(), "namespace")
 	g.Expect(os.WriteFile(nsFile, []byte("operator-ns\n"), 0o600)).To(Succeed())
 	serviceAccountNamespaceFile = nsFile
-	cs, err = s.controllerSettings()
+	cs, err := s.controllerSettings()
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cs.namespace).To(Equal("operator-ns"))
+	// Defaults: strict egress and Retain.
+	g.Expect(cs.deletion).To(Equal(common.DeletionRetain))
+	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
 
 	// The environment supplies the flag defaults; a flag wins.
 	t.Setenv("EGRESS_MODE", "allow-private")

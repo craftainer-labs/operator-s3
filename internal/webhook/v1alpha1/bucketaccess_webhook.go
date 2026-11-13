@@ -2,7 +2,6 @@ package v1alpha1
 
 import (
 	"context"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -54,7 +53,7 @@ func (v *BucketAccessValidator) ValidateDelete(_ context.Context, _ *s3v1alpha1.
 // The CRD schema has the same rule; the webhook states it with a clear field.
 func (v *BucketAccessValidator) validate(obj *s3v1alpha1.BucketAccess) error {
 	var errs field.ErrorList
-	if strings.ContainsAny(obj.Spec.Prefix, "*?$") {
+	if !s3v1alpha1.PrefixOK(obj.Spec.Prefix) {
 		errs = append(errs, field.Invalid(field.NewPath("spec", "prefix"), obj.Spec.Prefix, "must not contain *, ? or $"))
 	}
 	return invalid("BucketAccess", obj.GetName(), errs)

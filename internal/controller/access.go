@@ -10,10 +10,16 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/binding"
+	"github.com/craftainer-labs/lib-operator-go/pkg/conditions"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
@@ -64,6 +70,7 @@ func (r *AccessReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			x.pre = berr
 		}
 		x.persist = func(ctx context.Context) error { return r.Client.Status().Update(ctx, &a) }
+		x.held = func(ctx context.Context) (map[string][]byte, error) { return r.heldSecret(ctx, &a) }
 		ext = x
 	}
 	return lifecycle.Reconcile(ctx, r.Client, &a, a.Spec, ext, opts)
@@ -85,19 +92,64 @@ func (r *AccessReconciler) checkBucket(ctx context.Context, a *s3v1alpha1.Bucket
 		return "", fmt.Errorf("%w: Bucket %q is on %s %q, not on %s %q", ErrBucketNotUsable, key.Name,
 			b.Spec.ServerRef.Kind, b.Spec.ServerRef.Name, a.Spec.ServerRef.Kind, a.Spec.ServerRef.Name)
 	}
+	if !b.DeletionTimestamp.IsZero() {
+		return "", fmt.Errorf("%w: Bucket %q is being deleted", ErrBucketNotUsable, key.Name)
+	}
 	if b.GetExternalName() == "" {
 		return "", fmt.Errorf("%w: Bucket %q has no bucket yet", ErrBucketNotUsable, key.Name)
+	}
+	// The name is recorded before the bucket exists, so only Ready says it does.
+	if !meta.IsStatusConditionTrue(b.Status.Conditions, conditions.Ready) {
+		return "", fmt.Errorf("%w: Bucket %q is not Ready", ErrBucketNotUsable, key.Name)
 	}
 	return b.GetExternalName(), nil
 }
 
-// SetupWithManager registers the controller; it also watches the binding
-// Secrets it owns.
+// heldSecret is the data of the claim's binding Secret; a Secret that is not
+// there holds nothing. It reads through the API reader, because the cache only
+// holds Secrets with the operator's label.
+func (r *AccessReconciler) heldSecret(ctx context.Context, a *s3v1alpha1.BucketAccess) (map[string][]byte, error) {
+	var s corev1.Secret
+	err := r.APIReader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: a.GetBindingSecretName()}, &s)
+	return s.Data, client.IgnoreNotFound(err)
+}
+
+// bucketRefIndex indexes BucketAccesses by the name of the Bucket they use.
+const bucketRefIndex = ".spec.bucketRef.name"
+
+func indexBucketRef(o client.Object) []string {
+	return []string{o.(*s3v1alpha1.BucketAccess).Spec.BucketRef.Name}
+}
+
+// accessesOfBucket maps a Bucket to the BucketAccesses that name it, so an
+// access that waits for its Bucket is reconciled when the Bucket changes.
+func accessesOfBucket(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		var list s3v1alpha1.BucketAccessList
+		if err := c.List(ctx, &list, client.InNamespace(o.GetNamespace()), client.MatchingFields{bucketRefIndex: o.GetName()}); err != nil {
+			log.FromContext(ctx).Error(err, "cannot list the accesses of a Bucket", "bucket", o.GetName())
+			return nil
+		}
+		reqs := make([]reconcile.Request, len(list.Items))
+		for i := range list.Items {
+			reqs[i] = reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])}
+		}
+		return reqs
+	}
+}
+
+// SetupWithManager registers the controller. It also watches the binding
+// Secrets it owns (every change, so an edited Secret is repaired) and the
+// Buckets its claims name (so an access that waits for its Bucket goes on when
+// the Bucket is Ready). Only the claims themselves pass the lifecycle filter.
 func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &s3v1alpha1.BucketAccess{}, bucketRefIndex, indexBucketRef); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&s3v1alpha1.BucketAccess{}).
+		For(&s3v1alpha1.BucketAccess{}, builder.WithPredicates(lifecycle.Predicates())).
 		Owns(&corev1.Secret{}).
-		WithEventFilter(lifecycle.Predicates()).
+		Watches(&s3v1alpha1.Bucket{}, handler.EnqueueRequestsFromMapFunc(accessesOfBucket(mgr.GetClient()))).
 		Named("bucketaccess").
 		Complete(r)
 }
@@ -118,6 +170,8 @@ type accessExternal struct {
 	// persist writes the claim's status now, instead of at the end of the
 	// reconcile.
 	persist func(context.Context) error
+	// held reads the data of the binding Secret as it is now.
+	held func(context.Context) (map[string][]byte, error)
 }
 
 func newAccessExternal(be *backend, claim *s3v1alpha1.BucketAccess) *accessExternal {
@@ -138,7 +192,7 @@ func (e *accessExternal) activeKey() string { return e.key(e.claim.GetRotationSt
 // policy builds the access policy and its name, refusing a prefix that would
 // widen it.
 func (e *accessExternal) policy(spec s3v1alpha1.BucketAccessSpec) (string, []byte, error) {
-	if !objectKeyOK(spec.Prefix) {
+	if !s3v1alpha1.PrefixOK(spec.Prefix) {
 		return "", nil, ErrInvalidPrefix
 	}
 	doc := s3client.AccessPolicy(e.bucket, spec.Prefix, spec.Access != s3v1alpha1.AccessReadOnly)
@@ -172,8 +226,11 @@ func (e *accessExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketAcce
 		return none, e.pre
 	}
 	us, err := e.be.store.User(ctx, e.user)
-	if err != nil || !us.Exists {
+	if err != nil {
 		return none, err
+	}
+	if !us.Exists {
+		return e.leftovers(ctx)
 	}
 	if e.claim.GetExternalID() == "" {
 		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.user)
@@ -190,6 +247,21 @@ func (e *accessExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketAcce
 	return lifecycle.Observation[AccessState]{
 		Exists: true, UpToDate: upToDate, Current: AccessState{User: us, Key: key, KeyExists: exists},
 	}, nil
+}
+
+// leftovers reports an access whose user is already gone as existing while it
+// is being deleted and the store still holds policies it named, so that Delete
+// removes them. Otherwise a missing user is a missing access.
+func (e *accessExternal) leftovers(ctx context.Context) (lifecycle.Observation[AccessState], error) {
+	none := lifecycle.Observation[AccessState]{}
+	if e.claim.DeletionTimestamp.IsZero() || e.claim.GetExternalID() == "" {
+		return none, nil
+	}
+	owned, err := e.be.store.OwnedPolicies(ctx, e.user)
+	if err != nil || len(owned) == 0 {
+		return none, err
+	}
+	return lifecycle.Observation[AccessState]{Exists: true}, nil
 }
 
 // issue sets the secret key of the service account key and returns the
@@ -221,9 +293,12 @@ func (e *accessExternal) Create(ctx context.Context, spec s3v1alpha1.BucketAcces
 	return e.issue(ctx, e.activeKey())
 }
 
-// Update implements lifecycle.External. It also sets the secret key of the
-// active service account again, because the binding Secret has to be written
-// with a value the store cannot be asked for.
+// Update implements lifecycle.External: the user and its policy follow the
+// spec. The active service account keeps its secret key, so a change of policy
+// does not invalidate the credentials in use; the binding Secret is returned
+// as it is, with the fields that follow the spec. Only when no valid secret key
+// is held (the Secret does not hold the active key, or the key itself is gone
+// from the store) is the active key issued again: nothing that works is lost.
 func (e *accessExternal) Update(ctx context.Context, spec s3v1alpha1.BucketAccessSpec, cur AccessState) (binding.Data, error) {
 	p, err := e.params(spec)
 	if err != nil {
@@ -232,12 +307,28 @@ func (e *accessExternal) Update(ctx context.Context, spec s3v1alpha1.BucketAcces
 	if err := e.be.store.ApplyAccess(ctx, p, cur.User); err != nil {
 		return nil, err
 	}
+	held, err := e.held(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if secret := held["secretAccessKey"]; cur.KeyExists && len(secret) > 0 && string(held["accessKeyId"]) == cur.Key {
+		return e.data(cur.Key, string(secret)), nil
+	}
 	return e.issue(ctx, cur.Key)
 }
 
 // Delete implements lifecycle.External: every generation goes with the claim.
-func (e *accessExternal) Delete(ctx context.Context, cur AccessState) error {
-	return e.be.store.DeleteAccess(ctx, e.user, cur.User.Policies)
+// The service accounts are the ones this claim derived (the sequences up to the
+// next one, which a rotation may have issued before it failed); any other
+// account under the user name is left alone. The policies are found in the
+// store by their name, whether or not the user still has them.
+func (e *accessExternal) Delete(ctx context.Context, _ AccessState) error {
+	last := e.claim.GetRotationStatus().Sequence + 1
+	keys := make([]string, 0, last+1)
+	for seq := int64(0); seq <= last; seq++ {
+		keys = append(keys, e.key(seq))
+	}
+	return e.be.store.DeleteAccess(ctx, e.user, keys)
 }
 
 // RotateBegin implements lifecycle.Rotator: the next generation's service

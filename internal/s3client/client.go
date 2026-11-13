@@ -145,6 +145,10 @@ type Target struct {
 	MinTLS uint16
 	// Dial opens the TCP connection (see package egress).
 	Dial egress.DialFunc
+	// KeepAlive reuses connections between requests. Set it only for a Client
+	// that outlives a reconcile (the controllers keep one per store); the
+	// idle connections are bounded and closed by CloseIdleConnections.
+	KeepAlive bool
 }
 
 // signFunc signs a request; signer.SignV4 in production.
@@ -163,6 +167,9 @@ type Client struct {
 
 // newMinio builds the S3 client; a variable so a test can make it fail.
 var newMinio = minio.New
+
+// maxIdleConns bounds the idle connections of a Client to its one host.
+const maxIdleConns = 4
 
 // maxBody bounds what is read of any answer.
 const maxBody = 1 << 20
@@ -195,8 +202,12 @@ func New(t Target) (*Client, error) {
 		TLSClientConfig:       cfg,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
-		// A Client lives for one reconcile; idle connections would leak.
-		DisableKeepAlives: true,
+		// Without KeepAlive a Client lives for one reconcile, and idle
+		// connections would leak.
+		DisableKeepAlives:   !t.KeepAlive,
+		MaxIdleConns:        maxIdleConns,
+		MaxIdleConnsPerHost: maxIdleConns,
+		IdleConnTimeout:     time.Minute,
 	}
 	hc := &http.Client{
 		Transport: tr,
@@ -223,6 +234,10 @@ func New(t Target) (*Client, error) {
 		base: u, hc: hc, mc: mc, access: t.AccessKey, secret: t.SecretKey, region: region, sign: signer.SignV4,
 	}, nil
 }
+
+// CloseIdleConnections closes the idle connections of the Client; the
+// controllers call it when they drop a cached Client.
+func (c *Client) CloseIdleConnections() { c.hc.CloseIdleConnections() }
 
 // call is one request. path starts with "/" and is relative to the endpoint.
 type call struct {

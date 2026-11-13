@@ -174,10 +174,8 @@ func TestServiceAccountKeys(t *testing.T) {
 	if err := c.IssueKey(bg, "u1", "KEY2", "secret-3"); err != nil {
 		t.Fatal(err)
 	}
-	keys, err := c.ListKeys(bg, "u1")
-	slices.Sort(keys)
-	if err != nil || !slices.Equal(keys, []string{"KEY1", "KEY2"}) {
-		t.Errorf("keys = %v, %v", keys, err)
+	if len(f.key) != 2 || f.key["KEY1"] == nil || f.key["KEY2"] == nil {
+		t.Errorf("keys = %v", f.key)
 	}
 
 	// Deleting a key that is gone succeeds.
@@ -191,7 +189,7 @@ func TestServiceAccountKeys(t *testing.T) {
 		t.Error("KEY1 is still there")
 	}
 
-	for _, failOn := range []string{"info-service-account", "update-service-account", "add-service-accounts", "list-service-accounts", "delete-service-account"} {
+	for _, failOn := range []string{"info-service-account", "update-service-account", "add-service-accounts", "delete-service-account"} {
 		f.failOn = failOn
 		var err error
 		switch failOn {
@@ -201,8 +199,6 @@ func TestServiceAccountKeys(t *testing.T) {
 			err = c.IssueKey(bg, "u1", "KEY2", "s")
 		case "add-service-accounts":
 			err = c.IssueKey(bg, "u1", "KEY9", "s")
-		case "list-service-accounts":
-			_, err = c.ListKeys(bg, "u1")
 		default:
 			err = c.DeleteKey(bg, "KEY2")
 		}
@@ -217,11 +213,6 @@ func TestServiceAccountKeys(t *testing.T) {
 	if err := c.IssueKey(bg, "u1", "KEY2", "s"); err == nil {
 		t.Error("issue: the existence check failed silently")
 	}
-	f.failOn = ""
-	f.setBody("GET /rustfs/admin/v3/list-service-accounts", "[")
-	if _, err := c.ListKeys(bg, "u1"); !errors.Is(err, ErrBadResponse) {
-		t.Errorf("bad list: %v", err)
-	}
 }
 
 func TestDeleteAccess(t *testing.T) {
@@ -232,40 +223,78 @@ func TestDeleteAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.policy["foreign"] = "{}"
+	f.policy["tenant-user-extra"] = "{}"
 	for _, k := range []string{"K1", "K2"} {
 		if err := c.IssueKey(bg, "tenant-user", k, "s"); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// A service account of the user that the operator did not derive stays.
+	f.key["MANUAL"] = &fakeKey{parent: "tenant-user"}
 	f.key["OTHER"] = &fakeKey{parent: "someone-else"}
 
-	policies := []string{p.Policy, "foreign"}
-	if err := c.DeleteAccess(bg, "tenant-user", policies); err != nil {
+	if err := c.DeleteAccess(bg, "tenant-user", []string{"K1", "K2", "K3"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.user) != 0 || len(f.key) != 1 || f.key["OTHER"] == nil {
+	if len(f.user) != 0 || len(f.key) != 2 || f.key["OTHER"] == nil || f.key["MANUAL"] == nil {
 		t.Errorf("users = %v, keys = %v", f.user, f.key)
 	}
 	if _, ok := f.policy[p.Policy]; ok {
 		t.Error("the policy of the user is still there")
 	}
-	if _, ok := f.policy["foreign"]; !ok {
-		t.Error("a policy the operator did not name was removed")
+	for _, kept := range []string{"foreign", "tenant-user-extra"} {
+		if _, ok := f.policy[kept]; !ok {
+			t.Errorf("the policy %s, which the operator did not name, was removed", kept)
+		}
 	}
 	// Again: everything is gone and that is success.
-	if err := c.DeleteAccess(bg, "tenant-user", policies); err != nil {
+	if err := c.DeleteAccess(bg, "tenant-user", []string{"K1", "K2", "K3"}); err != nil {
 		t.Errorf("repeat: %v", err)
 	}
 
-	for _, failOn := range []string{"list-service-accounts", "delete-service-account", "remove-user", "remove-canned-policy"} {
-		f2 := newFakeStore(t)
-		c2 := f2.client()
-		_ = c2.ApplyAccess(bg, p, UserState{})
-		_ = c2.IssueKey(bg, "tenant-user", "K1", "s")
-		f2.failOn = failOn
-		if err := c2.DeleteAccess(bg, "tenant-user", []string{p.Policy}); err == nil {
+	// A policy outlives its user: it is found in the store, not through the
+	// user.
+	f2 := newFakeStore(t)
+	c2 := f2.client()
+	f2.policy[p.Policy] = "{}"
+	if err := c2.DeleteAccess(bg, "tenant-user", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(f2.policy) != 0 {
+		t.Errorf("policies = %v", f2.policy)
+	}
+
+	for _, failOn := range []string{"info-service-account", "delete-service-account", "remove-user", "list-canned-policies", "remove-canned-policy"} {
+		f3 := newFakeStore(t)
+		c3 := f3.client()
+		_ = c3.ApplyAccess(bg, p, UserState{})
+		_ = c3.IssueKey(bg, "tenant-user", "K1", "s")
+		f3.failOn = failOn
+		if err := c3.DeleteAccess(bg, "tenant-user", []string{"K1"}); err == nil {
 			t.Errorf("%s: no error", failOn)
 		}
+	}
+}
+
+func TestOwnedPolicies(t *testing.T) {
+	f := newFakeStore(t)
+	c := f.client()
+	f.policy["u-0123abcd"] = "{}"
+	f.policy["u-4567abcd"] = `{"Version":"2012-10-17"}`
+	f.policy["u-extra"] = "{}"
+	f.policy["u-v-0123abcd"] = "not json"
+	f.policy["readwrite"] = "{}"
+	got, err := c.OwnedPolicies(bg, "u")
+	if err != nil || !slices.Equal(got, []string{"u-0123abcd", "u-4567abcd"}) {
+		t.Errorf("owned = %v, %v", got, err)
+	}
+	f.setBody("GET /rustfs/admin/v3/list-canned-policies", "[")
+	if _, err := c.OwnedPolicies(bg, "u"); !errors.Is(err, ErrBadResponse) {
+		t.Errorf("bad list: %v", err)
+	}
+	f.failOn = "list-canned-policies"
+	if _, err := c.OwnedPolicies(bg, "u"); err == nil {
+		t.Error("a failed list is not an error")
 	}
 }
 
@@ -292,6 +321,12 @@ func TestQuota(t *testing.T) {
 	if err := c.setQuota(bg, "b", 0); err != nil {
 		t.Errorf("clear of a missing quota: %v", err)
 	}
+	// No quota set may be a 404.
+	f.statusOn["GET /rustfs/admin/v3/get-bucket-quota"] = 404
+	if q, err := c.quota(bg, "b"); err != nil || q != 0 {
+		t.Errorf("quota of a 404 = %d, %v", q, err)
+	}
+	delete(f.statusOn, "GET /rustfs/admin/v3/get-bucket-quota")
 	f.setBody("GET /rustfs/admin/v3/get-bucket-quota", "not json")
 	if _, err := c.quota(bg, "b"); !errors.Is(err, ErrBadResponse) {
 		t.Errorf("bad body: %v", err)

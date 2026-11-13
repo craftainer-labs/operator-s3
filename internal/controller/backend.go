@@ -7,10 +7,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,7 +50,8 @@ type Store interface {
 	KeyExists(ctx context.Context, key string) (bool, error)
 	IssueKey(ctx context.Context, user, key, secret string) error
 	DeleteKey(ctx context.Context, key string) error
-	DeleteAccess(ctx context.Context, user string, policies []string) error
+	OwnedPolicies(ctx context.Context, user string) ([]string, error)
+	DeleteAccess(ctx context.Context, user string, keys []string) error
 }
 
 var _ Store = (*s3client.Client)(nil)
@@ -77,6 +83,9 @@ type Config struct {
 	DefaultDeletionPolicy common.DeletionPolicy
 	Egress                egress.Policy
 	NewStore              NewStoreFunc
+	// Cache keeps the Store of each object store between reconciles; nil
+	// builds one for every reconcile.
+	Cache *StoreCache
 	// Now is the clock of the lifecycle (rotation and grace periods); nil is
 	// time.Now. Tests advance it.
 	Now func() time.Time
@@ -104,14 +113,19 @@ func (b *backend) region() string {
 // and the client, whose connections dial through the egress policy and the
 // store's proxy.
 func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*backend, error) {
+	cacheKey := storeKey(ns, ref)
 	conn, err := server.Resolve(ctx, c.Client, ns, ref, server.WithOperatorNamespace(c.OperatorNamespace))
 	if err != nil {
+		if errors.Is(err, server.ErrServerNotFound) {
+			c.Cache.Forget(cacheKey)
+		}
 		return nil, err
 	}
-	spec, err := c.storeSpec(ctx, ns, ref)
+	obj, err := c.fetchStore(ctx, ns, ref)
 	if err != nil {
 		return nil, err
 	}
+	spec := obj.spec
 	dial, err := c.Egress.HostDialer(conn.Proxy)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
@@ -121,10 +135,11 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrAdminCredentials)
 	}
 	b := &backend{spec: spec, conn: conn}
-	b.store, err = c.NewStore(s3client.Target{
+	target := s3client.Target{
 		Endpoint: conn.Endpoint, Region: b.region(), AccessKey: string(access), SecretKey: string(secret),
-		ServerName: conn.ServerName, CABundle: conn.CABundle, MinTLS: conn.MinTLSVersion, Dial: dial,
-	})
+		ServerName: conn.ServerName, CABundle: conn.CABundle, MinTLS: conn.MinTLSVersion, Dial: dial, KeepAlive: true,
+	}
+	b.store, err = c.Cache.Get(cacheKey, stamp(obj, target, conn.Proxy), func() (Store, error) { return c.NewStore(target) })
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
 	}
@@ -133,17 +148,59 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	return b, nil
 }
 
-// storeSpec reads the S3 fields of the store, which server.Connection does not
-// carry (ADR 0002, open issues).
-func (c Config) storeSpec(ctx context.Context, ns string, ref common.ServerRef) (s3v1alpha1.ObjectStoreConfig, error) {
+// storeObject is the store a claim names, as much of it as the controllers
+// use.
+type storeObject struct {
+	uid        types.UID
+	generation int64
+	spec       s3v1alpha1.ObjectStoreConfig
+}
+
+// fetchStore reads the store, whose S3 fields server.Connection does not
+// carry (ADR 0002, open issues), and its identity for the client cache.
+func (c Config) fetchStore(ctx context.Context, ns string, ref common.ServerRef) (storeObject, error) {
 	if ref.Kind == s3v1alpha1.KindClusterObjectStore {
 		var s s3v1alpha1.ClusterObjectStore
 		err := c.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, &s)
-		return s.Spec.ObjectStoreConfig, err
+		return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig}, err
 	}
 	var s s3v1alpha1.ObjectStore
 	err := c.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &s)
-	return s.Spec.ObjectStoreConfig, err
+	return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig}, err
+}
+
+// storeKey names a store in the client cache.
+func storeKey(ns string, ref common.ServerRef) string {
+	if ref.Kind == s3v1alpha1.KindClusterObjectStore {
+		ns = ""
+	}
+	return ref.Kind + "/" + ns + "/" + ref.Name
+}
+
+// stamp identifies what a cached client was built from: the store object (UID
+// and generation) and everything the connection takes from outside it, which
+// the generation does not cover: the credentials, the CA bundle and the proxy.
+// The credentials only go into a hash.
+func stamp(o storeObject, t s3client.Target, proxy *url.URL) string {
+	h := sha256.New()
+	for _, part := range [][]byte{
+		[]byte(o.uid), []byte(strconv.FormatInt(o.generation, 10)), []byte(t.Endpoint), []byte(t.Region),
+		[]byte(t.AccessKey), []byte(t.SecretKey), []byte(t.ServerName), t.CABundle,
+		[]byte(strconv.FormatUint(uint64(t.MinTLS), 10)), []byte(proxyText(proxy)),
+	} {
+		// Length-prefixed, so ("ab","c") and ("a","bc") differ.
+		_, _ = h.Write(strconv.AppendInt(nil, int64(len(part)), 10))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(part)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func proxyText(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return u.String()
 }
 
 // claimID is the claim part of the ownership marker.

@@ -299,14 +299,16 @@ func (f *fakeStore) admin(w http.ResponseWriter, r *http.Request, path string, b
 	case "DELETE /delete-service-account":
 		delete(f.key, q.Get("accessKey"))
 		f.deleted = append(f.deleted, "key:"+q.Get("accessKey"))
-	case "GET /list-service-accounts":
-		accounts := []map[string]string{}
-		for ak, k := range f.key {
-			if k.parent == q.Get("user") {
-				accounts = append(accounts, map[string]string{"accessKey": ak})
+	case "GET /list-canned-policies":
+		all := map[string]json.RawMessage{}
+		for name, doc := range f.policy {
+			if json.Valid([]byte(doc)) {
+				all[name] = json.RawMessage(doc)
+			} else {
+				all[name] = json.RawMessage("{}")
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": accounts})
+		_ = json.NewEncoder(w).Encode(all)
 	case "GET /get-bucket-quota":
 		_ = json.NewEncoder(w).Encode(map[string]any{"quota": f.quota[q.Get("bucket")], "size": 0})
 	case "PUT /set-bucket-quota":

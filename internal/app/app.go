@@ -167,6 +167,11 @@ func (s *settings) webhookServer() webhook.Server {
 // can point it elsewhere.
 var serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
+// ErrNoOperatorNamespace means the namespace of the operator could not be
+// determined: neither --operator-namespace (or $POD_NAMESPACE), nor the service account of the pod
+// names it.
+var ErrNoOperatorNamespace = errors.New("cannot determine the operator namespace: set --operator-namespace or POD_NAMESPACE, or run in a pod with a service account")
+
 // controllerSettings are the flags the controllers need, validated.
 type controllerSettings struct {
 	egress    egress.Policy
@@ -191,6 +196,11 @@ func (s *settings) controllerSettings() (controllerSettings, error) {
 		if b, err := os.ReadFile(serviceAccountNamespaceFile); err == nil {
 			ns = strings.TrimSpace(string(b))
 		}
+	}
+	if ns == "" {
+		// Every ClusterObjectStore is resolved in this namespace, so an empty
+		// one would fail each reconcile with a confusing error instead.
+		return controllerSettings{}, ErrNoOperatorNamespace
 	}
 	ctrl.Log.WithName("setup").Info("controller settings", "egressMode", string(mode),
 		"defaultDataDeletionPolicy", string(policy), "operatorNamespace", ns)
@@ -302,6 +312,9 @@ type setupStep struct {
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core;events.k8s.io,resources=events,verbs=create;patch
 
+// storeCacheIdle is how long a store's client stays cached without use.
+const storeCacheIdle = 10 * time.Minute
+
 // setupManager is a variable so a test can make the set-up fail: no step can
 // fail on a healthy manager.
 var setupManager = setup
@@ -323,7 +336,7 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	cfg := controller.Config{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorder(EventRecorderName),
 		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, DefaultDeletionPolicy: cs.deletion,
-		Egress: cs.egress, NewStore: controller.NewClientStore,
+		Egress: cs.egress, NewStore: controller.NewClientStore, Cache: controller.NewStoreCache(storeCacheIdle),
 	}
 	steps = append(steps,
 		setupStep{"Bucket controller", (&controller.BucketReconciler{Config: cfg}).SetupWithManager},

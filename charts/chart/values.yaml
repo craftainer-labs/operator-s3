@@ -125,6 +125,25 @@ manager:
   #   labels: {}
   #   annotations: {}
 
+## Which destinations the operator's connections to object stores (and their
+## proxies) may not reach. The operator dials every store itself, so this is its
+## SSRF guard.
+## - strict (default): loopback, link-local, cloud metadata and the private
+##   ranges (RFC 1918, CGNAT, unique-local) are refused.
+## - allow-private: the private ranges are allowed; loopback, link-local and
+##   cloud metadata stay refused. Choose it when a store (such as an in-cluster
+##   RustFS Service) or a proxy lives on a private address, which is the usual
+##   case inside a cluster.
+## Rendered as the manager's EGRESS_MODE.
+##
+egressMode: strict
+
+## The deletionPolicy a new Bucket is pinned to when its spec leaves it unset:
+## Retain (default; the bucket and its objects stay when the claim goes) or
+## Delete. Rendered as the manager's DEFAULT_DATA_DELETION_POLICY.
+##
+defaultDataDeletionPolicy: Retain
+
 ## RBAC configuration
 ##
 rbac:
