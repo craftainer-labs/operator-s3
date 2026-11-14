@@ -96,7 +96,9 @@ RustFS Service inside the cluster: with `strict` the operator cannot reach it.
 Credentials in a URL (`https://user:pw@host`) are rejected in `endpoint` and
 `proxyURL`; credentials come only from Secret references. Conditions and Events
 carry fixed texts only (for example "authentication failed"); the details are in
-the operator log.
+the operator log. The log is as bare: the operation and the failure category or
+S3 error code, at debug level (`-zap-log-level=debug`), never a host, key,
+secret or response body.
 
 ### A claim that stays `NameCollision`
 

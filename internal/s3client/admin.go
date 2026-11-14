@@ -23,12 +23,20 @@ type UserState struct {
 }
 
 func (c *Client) admin(ctx context.Context, method, path string, query url.Values, body any) ([]byte, error) {
-	rq := call{method: method, path: adminPrefix + path, query: query}
+	rq := call{method: method, path: adminPrefix + path, query: query, op: method + " " + adminOp(path)}
 	if body != nil {
 		rq.body, _ = json.Marshal(body) // maps and structs of strings always marshal
 		rq.contentType = "application/json"
 	}
 	return c.do(ctx, rq)
+}
+
+// adminOp is path as the log names it: without the bucket of a quota path.
+func adminOp(path string) string {
+	if strings.HasPrefix(path, "/quota/") {
+		return "/quota"
+	}
+	return path
 }
 
 func decodeJSON(data []byte, v any) error {
