@@ -496,8 +496,8 @@ spec:
               status:
                 (conditions[?type == 'Ready'] | [0].status): "True"
                 (conditions[?type == 'ServerReachable'] | [0].status): "True"
-                (serverVersion != null && serverVersion != ''): true
-                (lastProbeTime != null): true
+                (type(serverVersion) == 'string' && length(serverVersion) > `0`): true
+                (lastProbeTime != `null`): true
         - assert:
             timeout: 3m
             resource:
@@ -508,8 +508,8 @@ spec:
               status:
                 (conditions[?type == 'Ready'] | [0].status): "True"
                 (conditions[?type == 'ServerReachable'] | [0].status): "True"
-                (serverVersion != null && serverVersion != ''): true
-                (lastProbeTime != null): true
+                (type(serverVersion) == 'string' && length(serverVersion) > `0`): true
+                (lastProbeTime != `null`): true
 
     - name: Bucket and BucketAccess are created and become ready
       try:
