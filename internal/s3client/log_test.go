@@ -76,7 +76,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 		noLeak(t, name, buf.String(), "alice-ak")
-		if !strings.Contains(buf.String(), tc.want) || !strings.Contains(buf.String(), "GET /user-info") {
+		if !strings.Contains(buf.String(), tc.want) || !strings.Contains(buf.String(), "GET /rustfs/admin/v3/user-info") {
 			t.Errorf("%s: the log lacks the category and the operation: %s", name, buf)
 		}
 	}
@@ -115,7 +115,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 		noLeak(t, name, buf.String(), "alice-ak")
-		if !strings.Contains(buf.String(), "AccessDenied") || !strings.Contains(buf.String(), "GET /user-info") {
+		if !strings.Contains(buf.String(), "AccessDenied") || !strings.Contains(buf.String(), "GET /rustfs/admin/v3/user-info") {
 			t.Errorf("%s: the log lacks the code and the operation: %s", name, buf)
 		}
 	}
