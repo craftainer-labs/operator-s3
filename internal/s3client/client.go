@@ -7,7 +7,11 @@
 // A Client verifies the store's certificate chain and host name, never
 // follows a redirect, and dials only through the egress policy it is given.
 // Whatever the store answers reaches a condition or an Event only as one of
-// the fixed texts below; the raw error goes to the operator log.
+// the fixed texts below. The operator log is just as bare: it names the
+// operation and the category or the S3 error code, never the host, a key, a
+// secret or the text of an answer, and only at V(1), because the error that is
+// returned carries the same category and the reconciler logs it once per
+// change. The raw cause stays reachable through errors.Is and errors.As.
 package s3client
 
 import (
@@ -71,7 +75,8 @@ var (
 // error text to the tenant, and a tenant can aim a namespaced ObjectStore at
 // any host, so they carry only one of these fixed texts: never an address, a
 // resolved name or the raw error, which would turn the operator into a port
-// scanner and a resolver. The raw error goes to the operator log.
+// scanner and a resolver. The raw error is kept on the error for errors.Is and
+// errors.As and is never logged.
 var (
 	ErrConnPolicy  = errors.New("connection refused by the egress policy")
 	ErrConnTLS     = errors.New("TLS handshake failed")
@@ -270,31 +275,35 @@ func (c *Client) do(ctx context.Context, rq call) ([]byte, error) {
 	sum := sha256.Sum256(rq.body)
 	req.Header.Set("X-Amz-Content-Sha256", hex.EncodeToString(sum[:]))
 	req = c.sign(*req, c.access, c.secret, "", c.region)
+	op := rq.method + " " + adminOp(rq.path)
 	status, data, err := c.exchange(req)
 	if err != nil {
-		return nil, c.unreachable(ctx, rq.method+" "+rq.path, err)
+		return nil, c.unreachable(ctx, op, err)
 	}
 	if status/100 == 2 {
 		return data, nil
 	}
-	return nil, c.refused(ctx, rq.method+" "+rq.path, status, errorCode(data), snippet(data))
+	return nil, c.refused(ctx, op, status, errorCode(data))
 }
 
-// unreachable logs a transport failure and returns its fixed category.
+// unreachable logs the category of a transport failure and returns it. The
+// raw error names the host and is not logged.
 func (c *Client) unreachable(ctx context.Context, op string, err error) error {
-	log.FromContext(ctx).Error(err, "cannot reach the backend", "request", op)
-	return &connError{category: classify(err), cause: err}
+	e := &connError{category: classify(err), cause: err}
+	log.FromContext(ctx).V(1).Info("cannot reach the backend", "request", op, "category", e.category.Error())
+	return e
 }
 
-// refused logs a non-2xx answer and returns it as an *Error; 401 and 403 are
-// an authentication failure of an unreachable store.
-func (c *Client) refused(ctx context.Context, op string, status int, code, detail string) error {
+// refused logs the status and S3 code of a non-2xx answer, never its text, and
+// returns it as an *Error; 401 and 403 are an authentication failure of an
+// unreachable store.
+func (c *Client) refused(ctx context.Context, op string, status int, code string) error {
 	e := &Error{Status: status, Code: code}
+	msg := "the backend refused the request"
 	if status == http.StatusNotFound {
-		log.FromContext(ctx).V(1).Info("the backend found nothing", "request", op, "code", code)
-	} else {
-		log.FromContext(ctx).Error(e, "the backend refused the request", "request", op, "code", code, "detail", detail)
+		msg = "the backend found nothing"
 	}
+	log.FromContext(ctx).V(1).Info(msg, "request", op, "status", status, "code", loggable(code))
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return &connError{category: ErrConnAuth, cause: e}
 	}
@@ -308,7 +317,7 @@ func (c *Client) s3(ctx context.Context, op string, err error) error {
 	}
 	var resp minio.ErrorResponse
 	if errors.As(err, &resp) {
-		return c.refused(ctx, op, resp.StatusCode, resp.Code, resp.Message)
+		return c.refused(ctx, op, resp.StatusCode, resp.Code)
 	}
 	return c.unreachable(ctx, op, err)
 }
@@ -332,7 +341,22 @@ func errorCode(data []byte) string {
 	return e.Code
 }
 
-// snippet is the start of a body, for the operator log.
-func snippet(data []byte) string {
-	return string(data[:min(len(data), 512)])
+// invalidCode stands for a code that is not safe to log; no S3 code has angle
+// brackets, so it cannot be mistaken for one.
+const invalidCode = "<invalid>"
+
+// loggable returns an S3 error code that is safe to log: a short run of
+// letters, digits, dashes and underscores. The code comes from a server a
+// tenant may have chosen, so anything else is logged as invalidCode (an empty
+// code stays empty, so the two cases differ).
+func loggable(code string) string {
+	if len(code) > 64 {
+		return invalidCode
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+			return invalidCode
+		}
+	}
+	return code
 }

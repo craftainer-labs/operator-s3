@@ -199,15 +199,6 @@ func TestAnswersBecomeFixedErrors(t *testing.T) {
 	}
 }
 
-func TestSnippetIsBounded(t *testing.T) {
-	if got := snippet([]byte(strings.Repeat("x", 600))); len(got) != 512 {
-		t.Errorf("len = %d", len(got))
-	}
-	if snippet([]byte("short")) != "short" {
-		t.Error("short body changed")
-	}
-}
-
 // A connection that fails is an unreachable server with a category, and the
 // text never carries the address, the resolved name or the raw error.
 func TestTransportFailuresAreCategorised(t *testing.T) {
