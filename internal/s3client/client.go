@@ -341,17 +341,21 @@ func errorCode(data []byte) string {
 	return e.Code
 }
 
+// invalidCode stands for a code that is not safe to log; no S3 code has angle
+// brackets, so it cannot be mistaken for one.
+const invalidCode = "<invalid>"
+
 // loggable returns an S3 error code that is safe to log: a short run of
 // letters, digits, dashes and underscores. The code comes from a server a
-// tenant may have chosen, so anything else is logged as "invalid" (an empty
+// tenant may have chosen, so anything else is logged as invalidCode (an empty
 // code stays empty, so the two cases differ).
 func loggable(code string) string {
 	if len(code) > 64 {
-		return "invalid"
+		return invalidCode
 	}
 	for _, r := range code {
 		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
-			return "invalid"
+			return invalidCode
 		}
 	}
 	return code

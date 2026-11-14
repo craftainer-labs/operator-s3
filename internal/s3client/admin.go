@@ -34,8 +34,8 @@ func (c *Client) admin(ctx context.Context, method, path string, query url.Value
 // adminOp is the path as the log names it: the one path that carries a
 // bucket name, a quota path, loses it. do applies it to every request.
 func adminOp(path string) string {
-	if strings.HasPrefix(path, "/quota/") {
-		return "/quota"
+	if strings.HasPrefix(path, adminPrefix+"/quota/") {
+		return adminPrefix + "/quota"
 	}
 	return path
 }

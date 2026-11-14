@@ -136,14 +136,32 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 // path does not log its bucket.
 func TestLoggableAndAdminOp(t *testing.T) {
 	for in, want := range map[string]string{
-		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": "invalid", "10.1.2.3:9000": "invalid", "é": "invalid",
+		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": invalidCode, "10.1.2.3:9000": "invalid", "é": "invalid",
 		strings.Repeat("a", 65): "invalid", strings.Repeat("a", 64): strings.Repeat("a", 64),
 	} {
 		if got := loggable(in); got != want {
 			t.Errorf("loggable(%q) = %q", in, got)
 		}
 	}
-	if adminOp("/quota/my-bucket") != "/quota" || adminOp("/set-bucket-quota") != "/set-bucket-quota" {
+	if adminOp(adminPrefix+"/quota/my-bucket") != adminPrefix+"/quota" || adminOp(adminPrefix+"/set-bucket-quota") != adminPrefix+"/set-bucket-quota" {
 		t.Error("adminOp")
+	}
+}
+
+// The quota path carries a bucket name; the request that fails is logged
+// without it.
+func TestAQuotaPathIsLoggedWithoutItsBucket(t *testing.T) {
+	f := newFakeStore(t)
+	f.special = func(w http.ResponseWriter, _ *http.Request) bool {
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	}
+	ctx, buf := logSink()
+	if err := f.client().setQuota(ctx, "tenant-private-bucket", 0); err == nil {
+		t.Fatal("no error")
+	}
+	noLeak(t, "quota", buf.String(), "tenant-private-bucket")
+	if !strings.Contains(buf.String(), "DELETE /rustfs/admin/v3/quota") {
+		t.Errorf("the log lacks the operation: %s", buf)
 	}
 }
