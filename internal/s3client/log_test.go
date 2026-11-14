@@ -136,8 +136,8 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 // path does not log its bucket.
 func TestLoggableAndAdminOp(t *testing.T) {
 	for in, want := range map[string]string{
-		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": invalidCode, "10.1.2.3:9000": "invalid", "é": "invalid",
-		strings.Repeat("a", 65): "invalid", strings.Repeat("a", 64): strings.Repeat("a", 64),
+		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": invalidCode, "10.1.2.3:9000": invalidCode, "é": invalidCode,
+		strings.Repeat("a", 65): invalidCode, strings.Repeat("a", 64): strings.Repeat("a", 64),
 	} {
 		if got := loggable(in); got != want {
 			t.Errorf("loggable(%q) = %q", in, got)
