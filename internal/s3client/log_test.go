@@ -94,7 +94,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 	// An answer, with a body that names everything.
 	leaky := "<Error><Code>AccessDenied</Code><Message>admin-ak admin-sk 127.0.0.1 secret detail</Message></Error>"
 	for name, status := range map[string]int{"403": http.StatusForbidden, "503 with a body": http.StatusServiceUnavailable} {
-		f.special = func(w http.ResponseWriter, r *http.Request) bool {
+		f.special = func(w http.ResponseWriter, _ *http.Request) bool {
 			w.WriteHeader(status)
 			_, _ = w.Write([]byte(leaky))
 			return true
@@ -115,7 +115,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 	}
 
 	// The same answer through minio-go.
-	f.special = func(w http.ResponseWriter, r *http.Request) bool {
+	f.special = func(w http.ResponseWriter, _ *http.Request) bool {
 		xmlError(w, http.StatusForbidden, "AccessDenied")
 		return true
 	}
