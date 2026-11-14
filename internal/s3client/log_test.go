@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -37,6 +38,8 @@ func noLeak(t *testing.T, name, logged string, secrets ...string) {
 	}
 }
 
+var errRefused = errors.New("connection refused")
+
 func isURLError(err error) bool {
 	var u *url.Error
 	return errors.As(err, &u)
@@ -49,7 +52,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 
 	dialFails := func(c *Target) {
 		c.Dial = func(context.Context, string, string) (net.Conn, error) {
-			return nil, errors.New("dial tcp 10.1.2.3:9000: connect: connection refused")
+			return nil, fmt.Errorf("dial tcp 10.1.2.3:9000: connect: %w", errRefused)
 		}
 	}
 	tlsFails := func(c *Target) { c.CABundle = nil }
@@ -58,7 +61,7 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 		want   string
 		cause  func(error) bool
 	}{
-		"connection refused": {dialFails, ErrConnFailed.Error(), func(err error) bool { return err != nil }},
+		"connection refused": {dialFails, ErrConnFailed.Error(), func(err error) bool { return errors.Is(err, errRefused) }},
 		"TLS failure":        {tlsFails, ErrConnTLS.Error(), isURLError},
 	} {
 		tg := f.target()
@@ -81,7 +84,10 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 	// The S3 path logs the same way.
 	tg := f.target()
 	tlsFails(&tg)
-	c, _ := New(tg)
+	c, err := New(tg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, buf := logSink()
 	if _, err := c.Bucket(ctx, "bkt"); !errors.Is(err, ErrConnTLS) {
 		t.Errorf("S3 TLS: %v", err)
@@ -130,8 +136,8 @@ func TestTheLogHoldsOnlyCategoriesAndCodes(t *testing.T) {
 // path does not log its bucket.
 func TestLoggableAndAdminOp(t *testing.T) {
 	for in, want := range map[string]string{
-		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": "", "10.1.2.3:9000": "", "é": "",
-		strings.Repeat("a", 65): "", strings.Repeat("a", 64): strings.Repeat("a", 64),
+		"AccessDenied": "AccessDenied", "a-b_9": "a-b_9", "": "", "has space": "invalid", "10.1.2.3:9000": "invalid", "é": "invalid",
+		strings.Repeat("a", 65): "invalid", strings.Repeat("a", 64): strings.Repeat("a", 64),
 	} {
 		if got := loggable(in); got != want {
 			t.Errorf("loggable(%q) = %q", in, got)

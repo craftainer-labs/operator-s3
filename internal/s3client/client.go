@@ -255,9 +255,6 @@ type call struct {
 	query        url.Values
 	body         []byte
 	contentType  string
-	// op names the request in the log; empty means method and path. It never
-	// holds a name or a key.
-	op string
 }
 
 // do sends the admin request, signed, and returns the body of a 2xx answer.
@@ -278,10 +275,7 @@ func (c *Client) do(ctx context.Context, rq call) ([]byte, error) {
 	sum := sha256.Sum256(rq.body)
 	req.Header.Set("X-Amz-Content-Sha256", hex.EncodeToString(sum[:]))
 	req = c.sign(*req, c.access, c.secret, "", c.region)
-	op := rq.op
-	if op == "" {
-		op = rq.method + " " + rq.path
-	}
+	op := rq.method + " " + adminOp(rq.path)
 	status, data, err := c.exchange(req)
 	if err != nil {
 		return nil, c.unreachable(ctx, op, err)
@@ -349,14 +343,15 @@ func errorCode(data []byte) string {
 
 // loggable returns an S3 error code that is safe to log: a short run of
 // letters, digits, dashes and underscores. The code comes from a server a
-// tenant may have chosen, so anything else is dropped.
+// tenant may have chosen, so anything else is logged as "invalid" (an empty
+// code stays empty, so the two cases differ).
 func loggable(code string) string {
 	if len(code) > 64 {
-		return ""
+		return "invalid"
 	}
 	for _, r := range code {
 		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
-			return ""
+			return "invalid"
 		}
 	}
 	return code
