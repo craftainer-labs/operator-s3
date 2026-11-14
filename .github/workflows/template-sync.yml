@@ -46,7 +46,7 @@ jobs:
           token: ${{ secrets.TEMPLATE_SYNC_TOKEN || github.token }}
 
       # Belt-and-suspenders against a self-sync loop: this workflow ships
-      # inside the template repo itself (craftainer/template-fastapi),
+      # inside the template repo itself (craftainer/template-base),
       # which never has a state file, so "Read current sync state" below
       # already no-ops there. This step additionally refuses the one path
       # that could still set template_repo to this same repo -- a
@@ -150,6 +150,11 @@ jobs:
       - name: Apply replace and merge tiers
         id: apply
         if: inputs.initial_sync_tag == '' && steps.tags.outputs.skip != 'true' && steps.state.outputs.skip != 'true' && steps.cadence.outputs.skip != 'true'
+        env:
+          # The script runs inside the /tmp/template-new checkout, whose
+          # .github/scripts/ is a replace-tier directory: without this, its
+          # __pycache__ would be written there and synced into the instance.
+          PYTHONDONTWRITEBYTECODE: "1"
         run: |
           cd /tmp/template-new/.github/scripts
           set +e
@@ -211,6 +216,8 @@ jobs:
           TEMPLATE_REPO: ${{ steps.state.outputs.template_repo }}
           SYNCED_TAG: ${{ steps.state.outputs.synced_tag }}
           NEW_TAG: ${{ steps.tags.outputs.new_tag }}
+          # 1 when the merge left conflict markers (or a binary conflict).
+          CONFLICTS: ${{ steps.apply.outputs.conflicts }}
         run: |
           # Checkout doesn't persist credentials; git push uses gh's helper.
           gh auth setup-git
@@ -233,6 +240,14 @@ jobs:
             --template-repo "$TEMPLATE_REPO" \
             > /tmp/pr-body.md
 
-          gh pr create \
+          # Unresolved conflicts are committed as-is (markers and all), so
+          # open the PR as a draft: it cannot be merged by accident, and the
+          # body lists the files that need manual resolution.
+          draft=()
+          if [ "$CONFLICTS" = "1" ]; then
+            draft=(--draft)
+            echo "::warning::merge conflicts: opening the sync PR as a draft that needs manual resolution."
+          fi
+          gh pr create "${draft[@]}" \
             --title "chore(template-sync): sync to $NEW_TAG" \
             --body-file /tmp/pr-body.md

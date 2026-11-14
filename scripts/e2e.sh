@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The end-to-end run: build the image, create a kind cluster, install
-# cert-manager, load the image, run the Chainsaw tests (test/e2e), and always
-# tear the cluster down. The Chainsaw test installs the Helm chart itself, so
+# cert-manager (and wait for its webhook to accept requests), load the image,
+# run the Chainsaw tests (test/e2e), and always tear the cluster down. The Chainsaw test installs the Helm chart itself, so
 # the chart that ships is the chart that is tested.
 #
 # Topology (docs/adrs/0002): one kind cluster per run, named per run, on the
@@ -67,7 +67,8 @@ kubectl wait --for=condition=Available deployment --all -n cert-manager --timeou
 # Available does not mean the webhook answers: its Service endpoint and the
 # injected CA bundle can lag, and the chart's Issuer then fails with
 # "connection refused". Wait until the webhook admits an Issuer and a
-# Certificate (a server-side dry run creates nothing), for at most 3 minutes.
+# Certificate (a server-side dry run creates nothing, so nothing is left
+# behind), for at most 3 minutes.
 probe="${workdir}/webhook-ready.yaml"
 cat >"$probe" <<'YAML'
 apiVersion: cert-manager.io/v1
@@ -83,7 +84,7 @@ YAML
 deadline=$((SECONDS + 180))
 until out="$(kubectl apply --dry-run=server --request-timeout=15s -f "$probe" 2>&1)"; do
     if ((SECONDS >= deadline)); then
-        echo "e2e: the cert-manager webhook did not become ready: ${out}" >&2
+        echo "e2e: the cert-manager webhook did not become ready within 180s: ${out}" >&2
         exit 1
     fi
     sleep 5
