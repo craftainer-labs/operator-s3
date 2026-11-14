@@ -261,6 +261,13 @@ Findings from the OWASP review (A03/A08), and what each now does:
   age check, and are not automerged.
   Digest-only updates (including the Dockerfile's base image) were never
   in the automerged group.
+  Python 3.15 is held: a `packageRules` entry (`matchDepNames: ["python"]`,
+  `allowedVersions: "<3.15"`) keeps Renovate from proposing it, because uv has
+  no 3.15 build yet, pip-audit crashes on the removed `sre_constants` and
+  pydantic-core has no cp315 wheel on arm64. `.github/renovate.json` is
+  merge tier, so the rule reaches instances through template sync. Lift it
+  (delete the rule) once uv offers 3.15 builds and pip-audit and
+  pydantic-core support 3.15.
 - **Installers are verified, not run blind.** `scripts/develop.sh` no
   longer runs vendor install scripts. `uv` and `prek` are installed from
   their release tarballs, checked against the `.sha256` file published
@@ -1037,7 +1044,9 @@ release extras. The sync state names `craftainer/template-docker`.
 - **e2e topology.** `scripts/e2e.sh` needs docker, kind, kubectl, helm and
   chainsaw on `PATH`. It names the cluster per run, uses
   `kindest/node:v1.37.0@sha256:a1ed56cf...` (kind v0.33.0), installs
-  cert-manager from a checksummed release manifest, loads the image, runs
+  cert-manager from a checksummed release manifest and waits (3 minutes at
+  most) for its webhook to admit a server-side dry-run Issuer and Certificate,
+  loads the image, runs
   Chainsaw and always deletes the cluster and the `kind` network. Backends for
   an instance's e2e run as containers on the `kind` network, started before
   Chainsaw by the instance's own script, and are reached by container name.

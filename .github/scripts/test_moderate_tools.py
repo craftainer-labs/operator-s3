@@ -10,28 +10,74 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from git_test_env import git_env
+
 SCRIPTS = Path(__file__).resolve().parent
-GIT_ENV = {
-    "GIT_AUTHOR_NAME": "t",
-    "GIT_AUTHOR_EMAIL": "t@example.com",
-    "GIT_COMMITTER_NAME": "t",
-    "GIT_COMMITTER_EMAIL": "t@example.com",
-}
 
 
 def run(
     argv: list[str], cwd: Path | None = None, env: dict[str, str] | None = None, stdin: bytes = b""
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a fixed argv with a merged environment."""
+    """Run a fixed argv with a scrubbed (no inherited ``GIT_*``) merged environment."""
     return subprocess.run(  # noqa: S603 -- fixed argv, trusted scripts
         argv,
         cwd=cwd,
-        env={**os.environ, **GIT_ENV, **(env or {})},
+        env={**git_env(), **(env or {})},
         input=stdin,
         capture_output=True,
         check=False,
         timeout=60,
     )
+
+
+class GitEnvIsolationTest(unittest.TestCase):
+    """The helpers must not let an outer repo's ``GIT_*`` reach a scratch repo."""
+
+    @unittest.skipUnless(shutil.which("git"), "git is required")
+    def test_decoy_repo_is_untouched(self) -> None:
+        """With GIT_DIR/GIT_INDEX_FILE pointing at a decoy, git acts on the scratch repo only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            decoy, scratch = root / "decoy", root / "scratch"
+            decoy.mkdir()
+            scratch.mkdir()
+            plain = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            subprocess.run(  # noqa: S603 -- fixed argv
+                ["git", "init", "-q", str(decoy)],  # noqa: S607
+                check=True,
+                env=plain,
+            )
+            config_before = (decoy / ".git/config").read_bytes()
+            leaked = {
+                **os.environ,
+                "GIT_DIR": str(decoy / ".git"),
+                "GIT_INDEX_FILE": str(decoy / ".git/index"),
+                "GIT_WORK_TREE": str(decoy),
+            }
+            for argv in (["init", "-q", "-b", "main"], ["config", "core.bare", "true"]):
+                proc = subprocess.run(  # noqa: S603 -- fixed argv
+                    ["git", *argv],  # noqa: S607
+                    cwd=scratch,
+                    env=git_env(leaked),
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+            (scratch / "a.txt").write_text("x\n")
+            run(["git", "add", "a.txt"], cwd=scratch)  # run() scrubs the real environment too
+            self.assertTrue((scratch / ".git").is_dir())
+            self.assertEqual((decoy / ".git/config").read_bytes(), config_before)
+            self.assertFalse((decoy / ".git/index").exists())
+            self.assertFalse((decoy / "a.txt").exists())
+
+    def test_git_env_drops_everything_but_the_identity(self) -> None:
+        """Only the test identity and the config isolation survive."""
+        env = git_env({"GIT_DIR": "x", "GIT_CONFIG": "y", "PATH": "/bin"})
+        self.assertEqual(env["PATH"], "/bin")
+        self.assertNotIn("GIT_DIR", env)
+        self.assertNotIn("GIT_CONFIG", env)
+        self.assertEqual(env["GIT_AUTHOR_NAME"], "t")
+        self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
 
 
 class CheckPathsTest(unittest.TestCase):

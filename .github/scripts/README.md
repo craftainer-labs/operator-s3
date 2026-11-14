@@ -34,6 +34,11 @@
   disk. CI is safe because the runner checkout is discarded and the sync
   state does not advance. After a failed manual run, reset the working tree
   with `git checkout -- .` and then `git clean -fd` (separate commands).
+- `git_test_env.py` — `git_env()`, the environment every test that runs real
+  `git` must use: it drops all inherited `GIT_*` variables (a git hook exports
+  `GIT_DIR`, `GIT_INDEX_FILE`, ... which would make a scratch repo's `git add`
+  or `git init --bare` act on the outer repository, e.g. flipping its
+  `core.bare`) and keeps only a test identity.
 - `test_template_sync.py` — stdlib `unittest` tests for
   `template_sync.py`'s replace and merge tiers (including the executable
   bit, re-running a merge, symlinked destinations, and `git merge-file`

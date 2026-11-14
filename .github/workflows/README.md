@@ -75,8 +75,8 @@
   schedule or `workflow_dispatch`, diffs the instance against the
   template's latest tagged release per the manifest's tiers and opens a
   PR — never a direct push, never auto-merged.
-  `template_sync.py apply` exits 0 (clean), 1 (merge conflicts, still
-  opens the PR) or 2 (error, e.g. an unreadable manifest or `git
+  `template_sync.py apply` exits 0 (clean), 1 (merge conflicts: the PR is still
+  opened, as a draft whose body says it needs manual resolution) or 2 (error, e.g. an unreadable manifest or `git
   merge-file` failing): every failure other than conflicts exits 2. A
   binary merge-tier file the instance changed cannot be merged, so it is
   reported as a conflict and the instance's copy is left as it is. A crash before
@@ -86,7 +86,10 @@
   fails the job before the sync state advances. The job then exits with
   `apply`'s own status when that is 2 or higher (so the log and the step's
   exit code tell an error from conflicts) and the summary is printed as valid
-  only after that check.
+  only after that check. The sync never copies Python bytecode
+  (`__pycache__/`, `*.pyc`), and the apply step sets
+  `PYTHONDONTWRITEBYTECODE` so running the script cannot create any in the
+  template checkout.
 
 Every workflow's `runs-on` defaults to `ubuntu-24.04` but can be
 overridden with the `CI_RUNNER` repository/organization variable —

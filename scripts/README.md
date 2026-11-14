@@ -77,7 +77,9 @@
 - `bundle.sh`, `catalog.sh` — the OLM bundle for an image digest and version,
   and a single-bundle file-based catalog for it (`render`, `validate`,
   `dockerfile`).
-- `e2e.sh` — the kind + Chainsaw end-to-end run, always followed by teardown.
+- `e2e.sh` — the kind + Chainsaw end-to-end run (it waits for the cert-manager
+  webhook to admit a dry-run Issuer and Certificate before installing the
+  chart), always followed by teardown.
 - `extras/` — what `release-extras.yml` calls: `check-dispatch.sh` (the
   dispatch guard), `check-absent.sh` (refuses to publish over an existing tag;
   with `--resume` prints the digests of what exists), `refs.sh` (artifact names), `stage-chart.sh` (the chart with

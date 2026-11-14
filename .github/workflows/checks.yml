@@ -58,6 +58,22 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
+      # Optional instance script: a template that ships
+      # .github/scripts/semver_release_type.py (template-rust-crate) gets
+      # SEMVER_RELEASE_TYPE=major for a `!`-marked PR title (or, on main, head
+      # commit subject), which the hooks step forwards into the container.
+      # Base ships no such script, so the step is skipped here. The title and
+      # message are attacker-controlled and so reach the script only as
+      # environment variables, never interpolated into `run:`.
+      - name: Pick the semver-checks release type
+        if: hashFiles('.github/scripts/semver_release_type.py') != ''
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: python3 -I .github/scripts/semver_release_type.py >> "$GITHUB_ENV"
+
       # --hook-stage manual runs every hook (both the fast pre-commit-stage
       # ones and the extensive pre-push-stage ones) in one pass, inside the
       # devcontainer -- the same environment (uv, prek, playwright, ...) a
@@ -75,8 +91,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           runCmd: prek run --all-files --hook-stage manual
+          # SEMVER_RELEASE_TYPE comes from the step above; devcontainers/ci
+          # omits a name that is unset or empty, so the hooks' own default
+          # applies (and base, which has no such step, is unaffected).
           env: |
             GH_TOKEN
+            SEMVER_RELEASE_TYPE
 
       # devcontainers/ci starts the full compose stack (see
       # .devcontainer/devcontainer.json's dockerComposeFile) but never
