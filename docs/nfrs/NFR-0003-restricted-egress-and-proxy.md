@@ -57,7 +57,7 @@ review); plan rows EB-3 and EB-5;
 ## Verification
 
 The range tables of both modes and the dialers are covered where the policy lives, in
-lib-operator-go `pkg/egress` (`TestPolicyCheckRegistryRows`, `TestControl`,
+lib-operator-go `pkg/egress`, v0.3.0 or newer (`TestPolicyCheckRegistryRows`, `TestControl`,
 `TestDirectDialIsCheckedAfterResolution`, `TestHTTPProxyTunnel`, `TestSOCKS5ChecksTheDestination`,
 `TestCheckTarget`, `TestProxyUserinfoAndScheme`, `TestHostDialerResolvesBeforeTheProxy`).
 In this repository, `TestNewRejectsWhatItCannotUse`,
