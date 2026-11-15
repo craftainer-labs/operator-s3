@@ -14,9 +14,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 
+	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
-
-	"github.com/craftainer-labs/operator-s3/internal/egress"
 )
 
 func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {

@@ -36,9 +36,8 @@ import (
 	"github.com/minio/minio-go/v7/pkg/signer"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
-
-	"github.com/craftainer-labs/operator-s3/internal/egress"
 )
 
 var (

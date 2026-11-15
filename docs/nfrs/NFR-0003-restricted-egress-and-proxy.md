@@ -25,7 +25,9 @@ A namespaced ObjectStore lets a tenant name any host. Decided by the user on
 - An IPv6 address that carries an IPv4 address is checked as that IPv4 address:
   IPv4-mapped (`::ffff:`), NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), 6to4
   (`2002::/16`) and Teredo (`2001::/32`). The always-blocked set also holds
-  192.0.0.0/24, 198.18.0.0/15 and 168.63.129.16.
+  192.0.0.0/24, 198.18.0.0/15, the documentation ranges, SIIT (`::ffff:0:0:0/96`) and the
+  metadata addresses 100.100.100.200, 168.63.129.16, `fd00:ec2::254` and `fd20:ce::254`. A proxied target with a zone or a non-canonical
+  port is refused.
 - The environment variable `EGRESS_MODE` (flag `--egress-mode`) selects what is
   blocked. `strict`, the default, blocks loopback, link-local (which holds the
   cloud metadata address 169.254.169.254), the other metadata addresses,
@@ -54,12 +56,11 @@ review); plan rows EB-3 and EB-5;
 
 ## Verification
 
-`TestPolicyCheck`, `TestControl`, `TestDirectDialIsCheckedAfterResolution`,
-`TestHTTPProxyTunnel`, `TestHTTPSProxyTunnel`, `TestSOCKS5ChecksTheDestination`,
-`TestCheckTarget`, `TestProxyAddrDefaultPorts`, `TestProxyUserinfoAndScheme`,
-`TestHostDialerWithoutAProxyIsTheDialer` and
-`TestHostDialerResolvesBeforeTheProxy` (`internal/egress`) cover the range
-tables of both modes and the dialers; `TestNewRejectsWhatItCannotUse`,
+The range tables of both modes and the dialers are covered where the policy lives, in
+lib-operator-go `pkg/egress`, v0.3.0 or newer (`TestPolicyCheckRegistryRows`, `TestControl`,
+`TestDirectDialIsCheckedAfterResolution`, `TestHTTPProxyTunnel`, `TestSOCKS5ChecksTheDestination`,
+`TestCheckTarget`, `TestProxyUserinfoAndScheme`, `TestHostDialerResolvesBeforeTheProxy`).
+In this repository, `TestNewRejectsWhatItCannotUse`,
 `TestAnswersBecomeFixedErrors` and `TestTransportFailuresAreCategorised`
 (`internal/s3client`) cover the fixed texts and the endpoint rules;
 `TestObjectStoreValidator`, `TestClusterObjectStoreValidator` and
