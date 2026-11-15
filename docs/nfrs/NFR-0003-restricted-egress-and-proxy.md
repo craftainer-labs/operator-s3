@@ -60,7 +60,7 @@ The range tables of both modes and the dialers are covered where the policy live
 lib-operator-go `pkg/egress` (`TestPolicyCheckRegistryRows`, `TestControl`,
 `TestDirectDialIsCheckedAfterResolution`, `TestHTTPProxyTunnel`, `TestSOCKS5ChecksTheDestination`,
 `TestCheckTarget`, `TestProxyUserinfoAndScheme`, `TestHostDialerResolvesBeforeTheProxy`).
-`TestNewRejectsWhatItCannotUse`,
+In this repository, `TestNewRejectsWhatItCannotUse`,
 `TestAnswersBecomeFixedErrors` and `TestTransportFailuresAreCategorised`
 (`internal/s3client`) cover the fixed texts and the endpoint rules;
 `TestObjectStoreValidator`, `TestClusterObjectStoreValidator` and
