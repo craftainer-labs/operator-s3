@@ -26,7 +26,7 @@ A namespaced ObjectStore lets a tenant name any host. Decided by the user on
   IPv4-mapped (`::ffff:`), NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), 6to4
   (`2002::/16`) and Teredo (`2001::/32`). The always-blocked set also holds
   192.0.0.0/24, 198.18.0.0/15, the documentation ranges, SIIT (`::ffff:0:0:0/96`) and the
-  metadata addresses 168.63.129.16 and `fd20:ce::254`. A proxied target with a zone or a non-canonical
+  metadata addresses 100.100.100.200, 168.63.129.16, `fd00:ec2::254` and `fd20:ce::254`. A proxied target with a zone or a non-canonical
   port is refused.
 - The environment variable `EGRESS_MODE` (flag `--egress-mode`) selects what is
   blocked. `strict`, the default, blocks loopback, link-local (which holds the
