@@ -209,6 +209,27 @@ in `internal/app`:
   dedicated admin credentials that no other creator shares; a create by a
   different account gets `BucketAlreadyExists`.
 
+## Binding Secret
+
+A `BucketAccess` writes its access key to the Secret named by
+`spec.binding.secretName` (the claim's name when empty), in the claim's
+namespace. The Secret has the type `servicebinding.io/s3`, a `type` key (`s3`)
+and a `provider` key (`craftainer.dev`), as the Service Binding specification
+asks, and these data keys:
+
+| Key | Meaning |
+| --- | --- |
+| `endpoint` | The store's `spec.endpoint` (the URL of its S3 API). |
+| `region` | The store's `spec.region`, or `us-east-1` when unset. |
+| `bucket` | The name of the bucket on the store (the one the `Bucket` reports in `status.externalName`, not the claim's name). The Secret is written only once that `Bucket` is `Ready`, not being deleted and on the same store. |
+| `accessKeyId` | The access key of the service account. It changes on each credential rotation, so read it together with `secretAccessKey`. During the grace period of a rotation the previous key still works in the store, while the Secret already holds the new pair. |
+| `secretAccessKey` | The secret key of that service account. |
+| `prefix` | The `spec.prefix` the access is limited to, or empty for the whole bucket. |
+| `pathStyle` | `true` or `false`: whether the client should use path-style addressing. It is the store's `spec.pathStyle`, and `true` when unset. |
+| `sslrootcert` | The PEM CA bundle that the store's `spec.tls.caBundle` refers to, for the client to pin. The key is present and empty when the store has no bundle. |
+
+A binding Secret that is missing or does not hold the active key is replaced through a rotation (see "Controllers" and "Backup and restore"), so a consumer must read the Secret again, not cache it.
+
 ## Install
 
 Helm and OLM v1 need cert-manager for the webhooks' serving certificate; OLM
