@@ -318,6 +318,37 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, lifecycle.RotationState{}); err != nil || gen == "AKIANEW" || gen == "" {
 		t.Errorf("no active: %v, %q", err, gen)
 	}
+	if len(store.generated) != 2 || store.generated[0].id != "AKIANEW" {
+		t.Errorf("no active: the Secret's key was not kept: %v", store.generated)
+	}
+
+	// First rotation (no active key recorded): the Secret's key survives, an
+	// orphan goes, and a new key is made.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIAHELD", secret: "h"}, {id: "AKIAORPHAN", secret: "o"}}
+	e.binding = holding("AKIAHELD", "h")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, lifecycle.RotationState{}); err != nil || gen == "" || len(store.generated) != 2 || store.generated[0].id != "AKIAHELD" {
+		t.Errorf("first rotation: %v, %q, %v", err, gen, store.generated)
+	}
+
+	// RotateBegin succeeds, the Secret write then fails and RotateBegin is
+	// retried: the key the Secret holds is never deleted, and there are never
+	// more than two keys.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIAHELD", secret: "h"}}
+	e.binding = holding("AKIAHELD", "h")
+	for i := 0; i < 3; i++ {
+		if _, _, err := e.RotateBegin(ctx, spec, AccessState{}, lifecycle.RotationState{}); err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+		held := false
+		for _, k := range store.generated {
+			held = held || k.id == "AKIAHELD"
+		}
+		if !held || len(store.generated) > 2 {
+			t.Fatalf("retry %d: %v", i, store.generated)
+		}
+	}
 
 	// The Secret cannot be read, or the keys cannot be listed or deleted.
 	e, _ = awsExt(t)

@@ -470,34 +470,43 @@ func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAcc
 // rotateBeginGenerated is RotateBegin on AWS: the user's second key. A crash
 // between writing the binding Secret and recording the new key leaves the
 // Secret holding a key that status does not name yet. A retry must not delete
-// it: when the claim's Secret holds a key of the user other than the active or
-// the previous one, with its secret, that key is the generation being issued
-// and is reused (so no third key is made). Every other key is a leftover whose secret nobody holds
-// and goes first, so a retry never hits IAM's limit of two.
+// it. When status records an active key and the claim's Secret holds another
+// key of the user that is not the previous one, with its secret, that key is
+// the generation being issued and is reused (so no third key is made). When no
+// key is recorded as active (the Create status write was lost) and the Secret
+// holds one of the user, that key is the one in use and is kept as the active
+// one. Every other key is a leftover whose secret nobody holds and goes
+// first, so a retry never hits IAM's limit of two.
 func (e *accessExternal) rotateBeginGenerated(ctx context.Context, active string) (binding.Data, lifecycle.Generation, error) {
 	s, err := e.binding(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	// Only a Secret of this claim counts, and only while a key is active: with
-	// none recorded nothing says which key is the old one. The previous
-	// generation, still in its grace period, is never the new one.
+	// Only a Secret of this claim counts. The previous generation, still in its
+	// grace period, is never the new one.
 	rs := e.claim.GetRotationStatus()
-	if s != nil && active != "" && metav1.IsControlledBy(s, e.claim) && len(s.Data["secretAccessKey"]) > 0 {
-		if held := string(s.Data["accessKeyId"]); held != "" && held != active && held != rs.Previous {
+	if s != nil && metav1.IsControlledBy(s, e.claim) && len(s.Data["secretAccessKey"]) > 0 {
+		if held := string(s.Data["accessKeyId"]); held != "" && held != active {
 			ids, err := e.be.gen.Keys(ctx, e.user)
 			if err != nil {
 				return nil, "", err
 			}
 			if slices.Contains(ids, held) {
-				for _, id := range ids {
-					if id != held && id != active {
-						if err := e.be.gen.RemoveKey(ctx, e.user, id); err != nil {
-							return nil, "", err
+				if active == "" {
+					// No key is recorded as active (its status write was lost),
+					// so the key the Secret holds is the one in use: never delete
+					// it before the new one is written to the Secret.
+					active = held
+				} else if held != rs.Previous {
+					for _, id := range ids {
+						if id != held && id != active {
+							if err := e.be.gen.RemoveKey(ctx, e.user, id); err != nil {
+								return nil, "", err
+							}
 						}
 					}
+					return e.data(held, string(s.Data["secretAccessKey"])), lifecycle.Generation(held), nil
 				}
-				return e.data(held, string(s.Data["secretAccessKey"])), lifecycle.Generation(held), nil
 			}
 		}
 	}
