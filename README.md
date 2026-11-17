@@ -38,6 +38,26 @@ well-formed `https` URL, a `proxyURL` with a `http`, `https` or `socks5`
 scheme, and a `Bucket` quota of at least one byte. Defaults and every other
 rule are in the CRD schema (OpenAPI and CEL).
 
+### Provider and credentials (API only)
+
+`ObjectStore` and `ClusterObjectStore` accept an optional `provider` (type
+`AWS`, with an `aws` block) and `credentials` next to the self-hosted fields:
+
+- A store has either `adminCredentialsSecretRef` and `endpoint` (self-hosted
+  RustFS) or a `provider`. They exclude each other, and `credentials` is
+  allowed only with a `provider`.
+- A namespaced `ObjectStore` with a `provider` needs `credentials` with source
+  `Secret` in its own namespace; it may not use the operator's own identity.
+- With a `provider`, `region`, `pathStyle` and `backend` are forbidden:
+  the provider names its region.
+- `region`, `pathStyle` and `backend` no longer have schema defaults; the
+  controller applies them (`us-east-1`, `true`, `RustFS`), so a self-hosted
+  store behaves as before.
+
+The AWS store is not usable yet: the operator refuses a store with a
+`provider` until the AWS client lands, and it reports that as
+`Ready=False`.
+
 ## Controllers
 
 Both controllers run `lifecycle.Reconcile` of

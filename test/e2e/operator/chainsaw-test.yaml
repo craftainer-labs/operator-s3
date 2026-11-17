@@ -1,6 +1,6 @@
 # Installs the Helm chart into a Pod Security `restricted` namespace, with the
 # manager running as an arbitrary UID, then exercises the s3.craftainer.dev API
-# (CRDs, schema defaults and rules, webhooks) and each kind's create, ready and
+# (CRDs, schema rules, webhooks) and each kind's create, ready and
 # delete path against a TLS RustFS that runs in the cluster. The steps run in
 # order; the cluster is thrown away afterwards.
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -84,7 +84,7 @@ spec:
                 kubectl wait --for=condition=Established --timeout=60s "crd/${crd}.s3.craftainer.dev"
               done
 
-    - name: an ObjectStore gets its schema defaults
+    - name: an ObjectStore carries no schema defaults for the controller-defaulted fields
       try:
         - apply:
             resource:
@@ -102,10 +102,9 @@ spec:
               kind: ObjectStore
               metadata:
                 name: store
-              spec:
-                region: us-east-1
-                pathStyle: true
-                backend: RustFS
+              (spec.region == null): true
+              (spec.pathStyle == null): true
+              (spec.backend == null): true
 
     - name: the webhook rejects a bad proxy URL
       try:
@@ -474,10 +473,9 @@ spec:
               kind: ClusterObjectStore
               metadata:
                 name: e2e-s3
-              spec:
-                region: us-east-1
-                pathStyle: true
-                backend: RustFS
+              (spec.region == null): true
+              (spec.pathStyle == null): true
+              (spec.backend == null): true
 
     - name: the stores report their own status
       # The probe writes this, so a claim becoming Ready is no longer the

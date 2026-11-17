@@ -34,6 +34,12 @@ const (
 	AdminSecretKey = "secretKey"
 )
 
+// ErrCloudStore means the store names a provider, which this build of the
+// operator cannot serve yet (the AWS backend is added by NKs3-1a-ii). It is
+// wrapped in server.ErrInvalidServer, so a claim and the probe report it as a
+// store that cannot be used.
+var ErrCloudStore = errors.New("the store's cloud provider is not supported yet")
+
 // ErrAdminCredentials means the admin Secret lacks the access key or secret
 // key.
 var ErrAdminCredentials = errors.New("the admin Secret needs the keys accessKey and secretKey")
@@ -106,12 +112,7 @@ type backend struct {
 // region is the signing region: the store's, us-east-1 when it names none.
 func (b *backend) region() string { return regionOf(b.spec) }
 
-func regionOf(spec s3v1alpha1.ObjectStoreConfig) string {
-	if spec.Region == "" {
-		return "us-east-1"
-	}
-	return spec.Region
-}
+func regionOf(spec s3v1alpha1.ObjectStoreConfig) string { return spec.RegionOf() }
 
 // adminTarget is the connection to a store: its endpoint and signing region,
 // the admin credentials of conn and the TLS settings. The claims' reconcilers
@@ -128,12 +129,13 @@ func adminTarget(spec s3v1alpha1.ObjectStoreConfig, conn server.Connection, dial
 }
 
 // backend resolves ref for a claim in ns: the connection settings through
-// server.Resolve (which enforces allowedNamespaces), the store's S3 fields,
+// server.ResolveCloud (which enforces allowedNamespaces), the store's S3 fields,
 // and the client, whose connections dial through the egress policy and the
 // store's proxy.
 func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*backend, error) {
 	cacheKey := storeKey(ns, ref)
-	conn, err := server.Resolve(ctx, c.Client, ns, ref, server.WithOperatorNamespace(c.OperatorNamespace))
+	cc, err := server.ResolveCloud(ctx, c.Client, ns, ref, server.WithOperatorNamespace(c.OperatorNamespace))
+	conn := cc.Connection
 	if err != nil {
 		if errors.Is(err, server.ErrServerNotFound) {
 			c.Cache.Forget(cacheKey)
@@ -143,6 +145,9 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	obj, err := c.fetchStore(ctx, ns, ref)
 	if err != nil {
 		return nil, err
+	}
+	if obj.provider {
+		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 	}
 	spec := obj.spec
 	dial, err := c.Egress.HostDialer(conn.Proxy)
@@ -170,6 +175,8 @@ type storeObject struct {
 	uid        types.UID
 	generation int64
 	spec       s3v1alpha1.ObjectStoreConfig
+	// provider is true for a store that runs on a cloud.
+	provider bool
 }
 
 // fetchStore reads the store, whose S3 fields server.Connection does not
@@ -178,11 +185,11 @@ func (c Config) fetchStore(ctx context.Context, ns string, ref common.ServerRef)
 	if ref.Kind == s3v1alpha1.KindClusterObjectStore {
 		var s s3v1alpha1.ClusterObjectStore
 		err := c.Client.Get(ctx, client.ObjectKey{Name: ref.Name}, &s)
-		return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig}, err
+		return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig, s.HasProvider()}, err
 	}
 	var s s3v1alpha1.ObjectStore
 	err := c.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &s)
-	return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig}, err
+	return storeObject{s.UID, s.Generation, s.Spec.ObjectStoreConfig, s.HasProvider()}, err
 }
 
 // storeKey names a store in the client cache.

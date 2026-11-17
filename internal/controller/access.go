@@ -394,7 +394,7 @@ func (e *accessExternal) RotateFinish(ctx context.Context, _ s3v1alpha1.BucketAc
 // data is the s3 binding of one service account (ADR 0002, section 7). The CA
 // is the store's bundle.
 func (e *accessExternal) data(key, secret string) binding.Data {
-	pathStyle := e.be.spec.PathStyle == nil || *e.be.spec.PathStyle
+	pathStyle := e.be.spec.PathStyleOf()
 	return binding.Data{
 		"endpoint":        []byte(e.be.conn.Endpoint),
 		"region":          []byte(e.be.region()),

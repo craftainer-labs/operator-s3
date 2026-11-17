@@ -285,7 +285,7 @@ func newHarness(t *testing.T, policy common.DeletionPolicy, mutate func(*s3v1alp
 	}
 	srv := &s3v1alpha1.ClusterObjectStore{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	srv.Spec.Endpoint = "https://rustfs.example.test:9000"
-	srv.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: admin.Name, Namespace: h.ops}
+	srv.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: admin.Name, Namespace: h.ops}
 	srv.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	if mutate != nil {
 		mutate(srv)
