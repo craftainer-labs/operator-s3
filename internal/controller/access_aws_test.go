@@ -300,14 +300,15 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 		}
 	}
 
-	// The binding holds the previous key, still in its grace period: it is not
-	// the new one, and it is not deleted.
+	// The binding holds the previous key: it is not taken for the new one. IAM's
+	// limit of two keys leaves no room to keep it beside the active one, so it
+	// goes with the other leftovers and a new key is made.
 	e, store = awsExt(t)
 	store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIAPREV", secret: "p"}}
 	e.claim.SetRotationStatus(common.RotationStatus{Active: "AKIAACTIVE", Previous: "AKIAPREV"})
 	e.binding = holding("AKIAPREV", "p")
-	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st); err != nil || gen == "AKIAPREV" || gen == "" {
-		t.Errorf("previous: %v, %q", err, gen)
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st); err != nil || gen == "AKIAPREV" || gen == "" || len(store.generated) != 2 || store.generated[0].id != "AKIAACTIVE" {
+		t.Errorf("previous: %v, %q, %v", err, gen, store.generated)
 	}
 
 	// No active key is recorded: the Secret's key is not taken for a new one.

@@ -45,7 +45,7 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   Secret already holds and reuses it, when the Secret is controlled by the
   claim, a key is active, and the held key has a secret, exists on the user and
   is neither `status.rotation.active` nor `status.rotation.previous`; every key that is neither it nor the active
-  one is a leftover whose secret nobody holds and is deleted first. So a
+  one (the previous key too: IAM's two keys leave no room for it) is a leftover whose secret nobody holds and is deleted first. So a
   crash between the Secret write and the status write neither deletes a key in
   use nor leaves a third key to hit the limit. Reissuing a lost active key
   keeps `status.rotation.previous`, still in its grace period.
@@ -60,7 +60,9 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   loses a race answers `BucketAlreadyExists`, a `NameCollision`.
 - **The partition follows the region.** `cn-` is `aws-cn`, `us-gov-` is
   `aws-us-gov`, `us-iso-`, `us-isob-`, `eu-isoe-` and `us-isof-` are `aws-iso`,
-  `aws-iso-b`, `aws-iso-e` and `aws-iso-f`, anything else `aws`. The region is
+  `aws-iso-b`, `aws-iso-e` and `aws-iso-f`, `eusc-` is `aws-eusc`, anything else
+  `aws`. Only the China regions have a default endpoint domain; an isolated or
+  sovereign region needs `endpointOverride`. The region is
   `provider.aws.region`, so an endpoint override does not change it. It sets the ARN of the access policy and
   the China endpoint domain; an endpoint override is used as given.
 - **IAM settling is retried, never waited for.** A missing entity right after

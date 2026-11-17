@@ -248,8 +248,10 @@ request dials through the egress policy and the store's `proxyURL`, and
   user is created; changing them later does not move or re-bound an existing
   user. The policy's bucket ARN is in the
   partition of the store's region: `aws-cn` for `cn-` regions, `aws-us-gov` for
-  `us-gov-` regions, `aws-iso`, `aws-iso-b`, `aws-iso-e` or `aws-iso-f` for the
-  isolated regions, `aws` otherwise.
+  `us-gov-` regions, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f` or `aws-eusc` for the
+  isolated and sovereign regions, `aws` otherwise. The default endpoint is the
+  public one, so an isolated or sovereign region needs
+  `provider.aws.endpointOverride`.
 - **Rotation uses the user's two access keys.** IAM generates the key and shows
   the secret once. A rotation creates the second key, writes it to the binding
   Secret, and after the grace period deletes every key but the new one. Before
