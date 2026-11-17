@@ -13,6 +13,7 @@ import (
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 	"github.com/craftainer-labs/operator-s3/internal/awss3"
+	"github.com/craftainer-labs/operator-s3/internal/gcs"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
@@ -38,7 +39,20 @@ type paramValidator interface {
 	Validate(s3client.BucketParams) error
 }
 
-var _ paramValidator = (*awss3.Store)(nil)
+// markerEncoder is the optional interface of a Store that cannot hold the
+// marker "<namespace>/<name>/<uid>" as it is: a GCS label value allows
+// lowercase letters, digits, underscore and dash, 63 characters at most. The
+// store returns the form it writes and reads back; the controller compares
+// that form.
+type markerEncoder interface {
+	EncodeMarker(marker string) string
+}
+
+var (
+	_ paramValidator = (*awss3.Store)(nil)
+	_ paramValidator = (*gcs.Store)(nil)
+	_ markerEncoder  = (*gcs.Store)(nil)
+)
 
 // BucketReconciler reconciles Bucket claims (a data kind).
 type BucketReconciler struct{ Config }
@@ -104,7 +118,11 @@ func newBucketExternal(be *backend, claim *s3v1alpha1.Bucket) *bucketExternal {
 		name = s3client.BucketName(claim.Namespace, claim.Name)
 		claim.SetExternalName(name)
 	}
-	return &bucketExternal{be: be, claim: claim, name: name, marker: claimID(claim)}
+	marker := claimID(claim)
+	if enc, ok := be.store.(markerEncoder); ok {
+		marker = enc.EncodeMarker(marker)
+	}
+	return &bucketExternal{be: be, claim: claim, name: name, marker: marker}
 }
 
 // params turns the spec into what the store is asked for. Object lock needs
@@ -164,7 +182,7 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 		return none, err
 	}
 	upToDate := st.Marker() == e.marker && st.Versioning == p.Versioning && st.Quota == p.Quota &&
-		s3client.RulesEqual(st.Rules, p.Rules)
+		s3client.RulesMatch(st, p.Rules)
 	return lifecycle.Observation[s3client.BucketState]{Exists: true, UpToDate: upToDate, Current: st}, nil
 }
 

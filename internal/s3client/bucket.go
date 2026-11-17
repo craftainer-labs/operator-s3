@@ -1,6 +1,7 @@
 package s3client
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"maps"
@@ -34,6 +35,9 @@ type BucketState struct {
 	Versioning bool
 	// Rules are sorted by ID.
 	Rules []Rule
+	// NoRuleIDs is set by a store whose lifecycle rules have no ID (GCS): Rules
+	// then carry no ID, and RulesMatch compares the rules by prefix and days.
+	NoRuleIDs bool
 	// Quota is the hard quota in bytes; 0 is none.
 	Quota int64
 }
@@ -53,8 +57,22 @@ type BucketParams struct {
 
 func sortedRules(r []Rule) []Rule {
 	r = slices.Clone(r)
-	slices.SortFunc(r, func(a, b Rule) int { return strings.Compare(a.ID, b.ID) })
+	slices.SortFunc(r, func(a, b Rule) int {
+		return cmp.Or(strings.Compare(a.ID, b.ID), strings.Compare(a.Prefix, b.Prefix), cmp.Compare(a.Days, b.Days))
+	})
 	return r
+}
+
+// RulesMatch reports whether the bucket's rules are the wanted ones. A store
+// whose rules have no ID (NoRuleIDs) is compared by prefix and days alone.
+func RulesMatch(st BucketState, want []Rule) bool {
+	if st.NoRuleIDs {
+		want = slices.Clone(want)
+		for i := range want {
+			want[i].ID = ""
+		}
+	}
+	return RulesEqual(st.Rules, want)
 }
 
 // RulesEqual reports whether two rule lists hold the same rules, in any order.

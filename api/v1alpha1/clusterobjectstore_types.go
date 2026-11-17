@@ -8,20 +8,26 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 )
 
-// ClusterStoreProvider is the cloud a cluster store runs in. Only AWS is
-// supported by this operator so far.
+// ClusterStoreProvider is the cloud a cluster store runs in: AWS or GCP. Azure follows
+// with its own NKs3 item.
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'AWS'",message="only AWS is supported as provider.type"
-// +kubebuilder:validation:XValidation:rule="has(self.aws)",message="provider.aws is required"
+// +kubebuilder:validation:XValidation:rule="self.type == 'AWS' || self.type == 'GCP'",message="only AWS and GCP are supported as provider.type"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'AWS') == has(self.aws)",message="provider.aws is required when type is AWS, and forbidden otherwise"
+// +kubebuilder:validation:XValidation:rule="(self.type == 'GCP') == has(self.gcp)",message="provider.gcp is required when type is GCP, and forbidden otherwise"
 type ClusterStoreProvider struct {
 	// type selects the cloud; it cannot change. The schema lists every cloud
-	// of lib-operator-go, and the rules above admit only AWS: the other clouds
-	// come with their own NKs3 items.
+	// of lib-operator-go, and the rules above admit only AWS and GCP: Azure
+	// comes with its own NKs3 item.
 	Type cloud.ProviderType `json:"type"`
 
 	// aws is the AWS block, set exactly when type is AWS.
 	// +optional
 	AWS *ClusterAWSBlock `json:"aws,omitempty"`
+
+	// gcp is the GCP block, set exactly when type is GCP: the project, and
+	// the location buckets are created in (empty is GCS's default, US).
+	// +optional
+	GCP *cloud.GCPClusterBlock `json:"gcp,omitempty"`
 }
 
 // ClusterObjectStoreSpec defines the desired state of ClusterObjectStore.

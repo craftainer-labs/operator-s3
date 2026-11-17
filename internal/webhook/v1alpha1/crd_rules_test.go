@@ -82,6 +82,24 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 		s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
 		return s
 	}
+	gcpClusterStore := func(name string) *s3v1alpha1.ClusterObjectStore {
+		s := clusterStore(name)
+		s.Spec.Endpoint = ""
+		s.Spec.AdminCredentialsSecretRef = nil
+		s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
+			Type: cloud.ProviderGCP,
+			GCP:  &cloud.GCPClusterBlock{GCPBlock: cloud.GCPBlock{Project: "proj-12345", Location: "europe-west1"}},
+		}
+		return s
+	}
+	gcpStore := func(name string) *s3v1alpha1.ObjectStore {
+		s := store(name)
+		s.Spec.Endpoint = ""
+		s.Spec.AdminCredentialsSecretRef = nil
+		s.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderGCP, GCP: &cloud.GCPBlock{Project: "proj-12345"}}
+		s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "gcp"}}
+		return s
+	}
 	bucket := func(name string) *s3v1alpha1.Bucket {
 		return &s3v1alpha1.Bucket{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
@@ -201,9 +219,56 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			s.Spec.Provider.AWS.EndpointOverride = "http://moto:5000"
 			Expect(create(s)).To(Succeed())
 
-			s = awsClusterStore("gcp")
-			s.Spec.Provider.Type = cloud.ProviderGCP
-			rejected(create(s), "only AWS is supported as provider.type")
+			s = awsClusterStore("azure")
+			s.Spec.Provider.Type = cloud.ProviderAzure
+			rejected(create(s), "only AWS and GCP are supported as provider.type")
+		})
+
+		It("admits a store on GCP and checks its block", func() {
+			Expect(create(gcpClusterStore("gcp"))).To(Succeed())
+
+			s := gcpClusterStore("gcp-override")
+			s.Spec.Provider.GCP.EndpointOverride = "http://fake-gcs:4443"
+			s.Spec.Credentials = &cloud.Credentials{
+				Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "gcp", Namespace: "craftainer-system"},
+			}
+			Expect(create(s)).To(Succeed())
+
+			s = gcpClusterStore("gcp-no-block")
+			s.Spec.Provider.GCP = nil
+			rejected(create(s), "provider.gcp is required when type is GCP")
+
+			s = gcpClusterStore("gcp-and-aws")
+			s.Spec.Provider.AWS = awsClusterStore("x").Spec.Provider.AWS
+			rejected(create(s), "provider.aws is required when type is AWS, and forbidden otherwise")
+
+			s = awsClusterStore("aws-and-gcp")
+			s.Spec.Provider.GCP = gcpClusterStore("x").Spec.Provider.GCP
+			rejected(create(s), "provider.gcp is required when type is GCP, and forbidden otherwise")
+
+			s = gcpClusterStore("bad-project")
+			s.Spec.Provider.GCP.Project = "Not A Project"
+			rejected(create(s), "project")
+
+			s = gcpClusterStore("region-with-provider")
+			s.Spec.Region = "eu-west-1"
+			rejected(create(s), "region, pathStyle and backend are forbidden with a provider")
+		})
+
+		It("does not let a store gain or lose its GCP provider", func() {
+			s := clusterStore("gain-gcp")
+			Expect(create(s)).To(Succeed())
+			s.Spec.Endpoint = ""
+			s.Spec.AdminCredentialsSecretRef = nil
+			s.Spec.Provider = gcpClusterStore("x").Spec.Provider
+			rejected(k8sClient.Update(ctx, s), "provider cannot be added or removed")
+
+			g := gcpClusterStore("lose-gcp")
+			Expect(create(g)).To(Succeed())
+			g.Spec.Provider = nil
+			g.Spec.Endpoint = "https://rustfs:9000"
+			g.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(k8sClient.Update(ctx, g), "provider cannot be added or removed")
 		})
 
 		It("checks the IAM target of the AWS block", func() {
@@ -321,6 +386,40 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 
 		It("admits a store on AWS with a Secret in its own namespace", func() {
 			Expect(create(awsStore("aws"))).To(Succeed())
+		})
+
+		It("admits a store on GCP with a Secret in its own namespace and checks its block", func() {
+			Expect(create(gcpStore("gcp"))).To(Succeed())
+
+			s := gcpStore("gcp-no-block")
+			s.Spec.Provider.GCP = nil
+			rejected(create(s), "provider.gcp is required when type is GCP")
+
+			s = gcpStore("gcp-and-aws")
+			s.Spec.Provider.AWS = awsStore("x").Spec.Provider.AWS
+			rejected(create(s), "provider.aws is required when type is AWS, and forbidden otherwise")
+
+			s = gcpStore("gcp-identity")
+			s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(s), "a namespaced server must use source Secret")
+		})
+
+		It("does not let a store gain or lose its GCP provider", func() {
+			s := store("gain-gcp")
+			Expect(create(s)).To(Succeed())
+			s.Spec.Endpoint = ""
+			s.Spec.AdminCredentialsSecretRef = nil
+			s.Spec.Provider = gcpStore("x").Spec.Provider
+			s.Spec.Credentials = gcpStore("x").Spec.Credentials
+			rejected(k8sClient.Update(ctx, s), "provider cannot be added or removed")
+
+			g := gcpStore("lose-gcp")
+			Expect(create(g)).To(Succeed())
+			g.Spec.Provider = nil
+			g.Spec.Credentials = nil
+			g.Spec.Endpoint = "https://rustfs:9000"
+			g.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
+			rejected(k8sClient.Update(ctx, g), "provider cannot be added or removed")
 		})
 
 		It("refuses workload identity, a missing credential and a namespace on a namespaced store", func() {

@@ -268,11 +268,34 @@ spec:
                     required:
                     - region
                     type: object
+                  gcp:
+                    description: |-
+                      gcp is the GCP block, set exactly when type is GCP: the project, and
+                      the location buckets are created in (empty is GCS's default, US).
+                    properties:
+                      endpointOverride:
+                        description: EndpointOverride is as on AWSClusterBlock.
+                        maxLength: 2048
+                        pattern: ^https?://[^\s]+$
+                        type: string
+                      location:
+                        description: Location is the region, required where the resource
+                          is regional.
+                        maxLength: 64
+                        type: string
+                      project:
+                        description: Project is the project ID.
+                        maxLength: 30
+                        pattern: ^[a-z][a-z0-9-]{4,28}[a-z0-9]$
+                        type: string
+                    required:
+                    - project
+                    type: object
                   type:
                     description: |-
                       type selects the cloud; it cannot change. The schema lists every cloud
-                      of lib-operator-go, and the rules above admit only AWS: the other clouds
-                      come with their own NKs3 items.
+                      of lib-operator-go, and the rules above admit only AWS and GCP: Azure
+                      comes with its own NKs3 item.
                     enum:
                     - AWS
                     - GCP
@@ -285,10 +308,14 @@ spec:
                 - type
                 type: object
                 x-kubernetes-validations:
-                - message: only AWS is supported as provider.type
-                  rule: self.type == 'AWS'
-                - message: provider.aws is required
-                  rule: has(self.aws)
+                - message: only AWS and GCP are supported as provider.type
+                  rule: self.type == 'AWS' || self.type == 'GCP'
+                - message: provider.aws is required when type is AWS, and forbidden
+                    otherwise
+                  rule: (self.type == 'AWS') == has(self.aws)
+                - message: provider.gcp is required when type is GCP, and forbidden
+                    otherwise
+                  rule: (self.type == 'GCP') == has(self.gcp)
               proxyURL:
                 description: |-
                   ProxyURL is an http, https or socks5 proxy; unset uses the process

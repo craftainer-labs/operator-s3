@@ -32,6 +32,7 @@ import (
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 	"github.com/craftainer-labs/operator-s3/internal/awss3"
+	"github.com/craftainer-labs/operator-s3/internal/gcs"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
@@ -42,7 +43,7 @@ const (
 )
 
 // ErrCloudStore means the store's provider block is not one this operator
-// serves (only AWS, with its aws block; the CRD's rules admit nothing else, so
+// serves (AWS with its aws block, GCP with its gcp block; the CRD's rules admit nothing else, so
 // this is a guard against a store that skipped them). It is wrapped in
 // server.ErrInvalidServer, so a claim and the probe report it as a store that
 // cannot be used.
@@ -94,6 +95,7 @@ var (
 	_ ChosenKeyStore    = (*s3client.Client)(nil)
 	_ Store             = (*awss3.Store)(nil)
 	_ GeneratedKeyStore = (*awss3.Store)(nil)
+	_ Store             = (*gcs.Store)(nil)
 )
 
 // NewAWSStoreFunc builds the Store of an AWS configuration; production uses
@@ -107,6 +109,25 @@ func NewAWSStore(cfg aws.Config, opts ...awss3.Option) Store { return awss3.New(
 // ProbeAWSFunc checks that an AWS account is usable and returns its id;
 // production uses awss3.Probe.
 type ProbeAWSFunc func(ctx context.Context, cfg aws.Config) (account string, err error)
+
+// NewGCPStoreFunc builds the Store of a GCP client (see cloud.Egress.GCP) for a
+// project and the location its buckets are created in; production uses
+// NewGCPStore.
+type NewGCPStoreFunc func(ctx context.Context, c *cloud.GCPClient, project, location string) (Store, error)
+
+// NewGCPStore is the NewGCPStoreFunc of the operator: the Cloud Storage client
+// of the project.
+func NewGCPStore(ctx context.Context, c *cloud.GCPClient, project, location string) (Store, error) {
+	s, err := gcs.New(ctx, c, project, location)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// ProbeGCPFunc checks that a Google Cloud project is usable; production uses
+// gcs.Probe.
+type ProbeGCPFunc func(ctx context.Context, c *cloud.GCPClient, project string) error
 
 // NewStoreFunc builds the Store of a target; production uses NewClientStore.
 type NewStoreFunc func(t s3client.Target) (Store, error)
@@ -142,6 +163,9 @@ type Config struct {
 	// NewAWSStore and ProbeAWS serve the stores whose provider is AWS.
 	NewAWSStore NewAWSStoreFunc
 	ProbeAWS    ProbeAWSFunc
+	// NewGCPStore and ProbeGCP serve the stores whose provider is GCP.
+	NewGCPStore NewGCPStoreFunc
+	ProbeGCP    ProbeGCPFunc
 	// Cache keeps the Store of each object store between reconciles; nil
 	// builds one for every reconcile.
 	Cache *StoreCache
@@ -166,10 +190,13 @@ type backend struct {
 // cloudStore is the provider of a store that runs on a cloud; the zero value
 // (set false) is a self-hosted store.
 type cloudStore struct {
-	set   bool
+	set bool
+	// kind is the cloud: ProviderAWS (aws and iam are set) or ProviderGCP (gcp).
+	kind  cloud.ProviderType
 	scope cloud.Scope
 	aws   cloud.AWSClusterBlock
 	iam   s3v1alpha1.IAMTarget
+	gcp   cloud.GCPClusterBlock
 	creds *cloud.Credentials
 }
 
@@ -179,10 +206,16 @@ func clusterCloud(s *s3v1alpha1.ClusterObjectStore) (cloudStore, error) {
 	if p == nil {
 		return cloudStore{}, nil
 	}
-	if p.Type != cloud.ProviderAWS || p.AWS == nil {
-		return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
+	switch {
+	case p.Type == cloud.ProviderAWS && p.AWS != nil:
+		return cloudStore{
+			set: true, kind: cloud.ProviderAWS, scope: cloud.ScopeCluster, aws: p.AWS.AWSClusterBlock, iam: p.AWS.IAMTarget,
+			creds: s.Spec.Credentials,
+		}, nil
+	case p.Type == cloud.ProviderGCP && p.GCP != nil:
+		return cloudStore{set: true, kind: cloud.ProviderGCP, scope: cloud.ScopeCluster, gcp: *p.GCP, creds: s.Spec.Credentials}, nil
 	}
-	return cloudStore{set: true, scope: cloud.ScopeCluster, aws: p.AWS.AWSClusterBlock, iam: p.AWS.IAMTarget, creds: s.Spec.Credentials}, nil
+	return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 }
 
 // namespacedCloud reads the provider of an ObjectStore. It has no
@@ -192,13 +225,19 @@ func namespacedCloud(s *s3v1alpha1.ObjectStore) (cloudStore, error) {
 	if p == nil {
 		return cloudStore{}, nil
 	}
-	if p.Type != cloud.ProviderAWS || p.AWS == nil {
-		return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
+	switch {
+	case p.Type == cloud.ProviderAWS && p.AWS != nil:
+		return cloudStore{
+			set: true, kind: cloud.ProviderAWS, scope: cloud.ScopeNamespaced, aws: cloud.AWSClusterBlock{AWSBlock: p.AWS.AWSBlock},
+			iam: p.AWS.IAMTarget, creds: s.Spec.Credentials.AsCredentials(),
+		}, nil
+	case p.Type == cloud.ProviderGCP && p.GCP != nil:
+		return cloudStore{
+			set: true, kind: cloud.ProviderGCP, scope: cloud.ScopeNamespaced, gcp: cloud.GCPClusterBlock{GCPBlock: *p.GCP},
+			creds: s.Spec.Credentials.AsCredentials(),
+		}, nil
 	}
-	return cloudStore{
-		set: true, scope: cloud.ScopeNamespaced, aws: cloud.AWSClusterBlock{AWSBlock: p.AWS.AWSBlock}, iam: p.AWS.IAMTarget,
-		creds: s.Spec.Credentials.AsCredentials(),
-	}, nil
+	return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 }
 
 // awsEndpoint is the address of the S3 API of an AWS store: the emulator
@@ -212,6 +251,15 @@ func awsEndpoint(b cloud.AWSClusterBlock) string {
 		suffix = ".cn"
 	}
 	return "https://s3." + b.Region + ".amazonaws.com" + suffix
+}
+
+// gcsEndpoint is the address of the Cloud Storage API of a GCP store: the
+// emulator override, or Google's.
+func gcsEndpoint(b cloud.GCPClusterBlock) string {
+	if b.EndpointOverride != "" {
+		return b.EndpointOverride
+	}
+	return "https://storage.googleapis.com"
 }
 
 // cloudEgress is the egress of a cloud store: the operator's mode and policy,
@@ -238,6 +286,37 @@ func (c Config) awsConfig(ctx context.Context, cs cloudStore, cc server.CloudCon
 		return aws.Config{}, err
 	}
 	return e.AWS(ctx, cs.scope, cs.aws, cs.creds, cc.Credentials)
+}
+
+// gcpClient builds the authorized HTTP client of a GCP store through
+// pkg/cloud, which refuses an endpointOverride the operator does not allow and
+// a credentials key that is not a service_account.
+func (c Config) gcpClient(ctx context.Context, cs cloudStore, cc server.CloudConnection) (*cloud.GCPClient, error) {
+	e, err := c.cloudEgress(cc.Connection)
+	if err != nil {
+		return nil, err
+	}
+	return e.GCP(ctx, cs.scope, cs.gcp, cs.creds, cc.Credentials)
+}
+
+// gcpBackend resolves a store that runs on GCP. The Store is kept between
+// reconciles, and rebuilt only when what awsStamp covers changed.
+func (c Config) gcpBackend(ctx context.Context, cacheKey string, obj storeObject, cc server.CloudConnection) (*backend, error) {
+	endpoint := gcsEndpoint(obj.cloud.gcp)
+	b := &backend{spec: obj.spec, conn: cc.Connection, host: hostOf(endpoint)}
+	b.conn.Endpoint = bareEndpoint(endpoint)
+	var err error
+	b.store, err = c.Cache.Get(cacheKey, awsStamp(obj, cc), func() (Store, error) {
+		g, err := c.gcpClient(ctx, obj.cloud, cc)
+		if err != nil {
+			return nil, err
+		}
+		return c.NewGCPStore(ctx, g, obj.cloud.gcp.Project, obj.cloud.gcp.Location)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
+	}
+	return b, nil
 }
 
 // awsBackend resolves a store that runs on AWS. The Store is kept between
@@ -328,6 +407,9 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 		return nil, err
 	}
 	if obj.cloud.set {
+		if obj.cloud.kind == cloud.ProviderGCP {
+			return c.gcpBackend(ctx, cacheKey, obj, cc)
+		}
 		return c.awsBackend(ctx, cacheKey, obj, cc)
 	}
 	spec := obj.spec
@@ -399,7 +481,7 @@ func stamp(o storeObject, t s3client.Target, proxy *url.URL) string {
 	)
 }
 
-// awsStamp is stamp for a store on AWS: the store object (its generation
+// awsStamp is stamp for a store on AWS or GCP: the store object (its generation
 // covers region, role and endpoint) and the data of the credentials Secret, the
 // CA bundle and the proxy, which it does not. A workload identity has no
 // Secret; the SDK renews its token itself.

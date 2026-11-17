@@ -37,6 +37,14 @@ IAM and does not validate a web identity token, so IAM eventual consistency, a
 role's permissions and workload identity are not checked here. Run them with
 `MOTO_ENDPOINT=http://<moto address>:5000 go test -tags integration,moto -run TestMoto ./test/integration/...`.
 
+The GCS store has a third set (`gcs_test.go`, build tags `integration` and
+`gcs`) against fake-gcs-server pinned by digest. They create, read, update and
+delete a bucket, check that a quota and object lock are refused and run the
+probe. fake-gcs-server keeps a bucket's name and versioning only and enforces
+no IAM (NFR-0006), so the label, the lifecycle rules and authentication are
+not exercised. Run them with `FAKE_GCS_ENDPOINT=http://<address>:4443 go test
+-tags integration,gcs -run TestGCS ./test/integration/...`.
+
 Files:
 
 - `server_test.go` — the environment, the helpers and the signed raw request.
