@@ -184,7 +184,7 @@ func (f *fakeS3) sub(w http.ResponseWriter, r *http.Request, name, sub string, b
 			b.tags[tag.Key] = tag.Value
 		}
 	case "GET versioning":
-		fmt.Fprintf(w, `<VersioningConfiguration><Status>%s</Status></VersioningConfiguration>`, b.versioning)
+		_, _ = fmt.Fprintf(w, `<VersioningConfiguration><Status>%s</Status></VersioningConfiguration>`, b.versioning)
 	case "PUT versioning":
 		var v struct {
 			Status string `xml:"Status"`
