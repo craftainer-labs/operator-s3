@@ -9,7 +9,8 @@ package integration
 //
 // What fake-gcs-server cannot check, and these tests therefore do not: it keeps
 // a bucket's name and versioning only, so the ownership label, the lifecycle
-// rules and the location are accepted and dropped (the httptest fake of
+// rules, the location and the IAM configuration (uniform bucket-level access,
+// public access prevention) are accepted and dropped (the httptest fake of
 // internal/gcs checks that the store sends them, not that GCS keeps them); it
 // does not enforce IAM or validate a token, so a refused credential, the 403 of
 // a bucket another project holds and the workload identity of a real cluster

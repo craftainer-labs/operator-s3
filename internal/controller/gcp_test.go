@@ -361,6 +361,26 @@ func TestBucketsOnAStoreThatEncodesTheMarker(t *testing.T) {
 	h.fake.wantNot(t, "CreateBucket", "UpdateBucket")
 }
 
+// A bucket of the claim that the store reports Drifted is not up to date: the
+// store is asked to update it.
+func TestADriftedBucketIsUpdated(t *testing.T) {
+	h, _ := newGCPHarness(t, nil)
+	r := &BucketReconciler{h.cfg}
+	b := h.bucket("hardening", nil)
+	h.reconcileOK(r, b)
+	name := s3client.BucketName(h.ns, "hardening")
+	h.fake.reset()
+	h.reconcileOK(r, b)
+	h.fake.wantNot(t, "CreateBucket", "UpdateBucket")
+
+	st := h.fake.buckets[name]
+	st.Drifted = true
+	h.fake.buckets[name] = st
+	h.fake.reset()
+	h.reconcileOK(r, b)
+	h.fake.want(t, "UpdateBucket "+name)
+}
+
 // atomicStore is a Store that writes the marker in the request that creates the
 // bucket (as the GCS store does).
 type atomicStore struct{ *memStore }

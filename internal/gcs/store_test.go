@@ -405,25 +405,39 @@ func TestBucketsAreHardened(t *testing.T) {
 		t.Fatalf("a hardened bucket is drifted: %+v, %v", st, err)
 	}
 
-	// Another label owns the bucket: it is not touched.
-	f.buckets["b1"]["iamConfiguration"] = map[string]any{}
-	st, _ = s.Bucket(ctx, "b1")
-	if !st.Drifted {
-		t.Fatalf("an unhardened bucket is not drifted: %+v", st)
+	// Drift on either setting alone is reported.
+	for _, iam := range []map[string]any{
+		{},
+		{"uniformBucketLevelAccess": map[string]any{"enabled": true}},
+		{"publicAccessPrevention": "enforced"},
+		{"uniformBucketLevelAccess": map[string]any{"enabled": true}, "publicAccessPrevention": "inherited"},
+	} {
+		f.mu.Lock()
+		f.buckets["b1"]["iamConfiguration"] = iam
+		f.mu.Unlock()
+		if st, err = s.Bucket(ctx, "b1"); err != nil || !st.Drifted {
+			t.Fatalf("%v is not drifted: %+v, %v", iam, st, err)
+		}
 	}
+
+	// A bucket with another label is never hardened (the controller never gets
+	// here with one; the store does not rely on that).
 	other := st
 	other.Tags = map[string]string{s3client.MarkerTag: "other"}
 	f.reset()
-	if err := s.UpdateBucket(ctx, p, other); err != nil || strings.Contains(f.callList(), "PATCH") {
-		t.Errorf("a bucket of another claim was written: %v\n%s", err, f.callList())
+	if err = s.UpdateBucket(ctx, p, other); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := f.bucket("b1")["iamConfiguration"].(map[string]any); got["publicAccessPrevention"] != "inherited" {
+		t.Errorf("a bucket of another claim was hardened: %+v", got)
 	}
 
 	// The claim's own bucket is hardened again.
 	f.reset()
-	if err := s.UpdateBucket(ctx, p, st); err != nil || !strings.Contains(f.callList(), "PATCH") {
+	if err = s.UpdateBucket(ctx, p, st); err != nil || !strings.Contains(f.callList(), "PATCH") {
 		t.Fatalf("drift: %v\n%s", err, f.callList())
 	}
-	if st, _ = s.Bucket(ctx, "b1"); st.Drifted {
-		t.Errorf("still drifted after the update: %+v", st)
+	if st, err = s.Bucket(ctx, "b1"); err != nil || st.Drifted {
+		t.Errorf("still drifted after the update: %+v, %v", st, err)
 	}
 }
