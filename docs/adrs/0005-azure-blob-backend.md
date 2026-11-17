@@ -398,9 +398,10 @@ a principal name, and needs a CEL pattern (16.4 has only `maxLength: 320`);
 `username` in the binding is that GUID (16.5 says the name); `authMode` is a
 key of an s3 binding (16.5 lists it for db and cache only); and, as
 section 16.8 decision 6 decided no allow-list, a tenant can grant its bucket to
-any object ID in the tenant. That is the same lack of an allow-list decided
-for db and cache; the Azure grant is narrower in scope (one data role on the
-claim's own container, not a database role or an ACL policy). Sub-choices:
+any object ID in the Entra directory. That is the same lack of an allow-list
+decided for db and cache. The Azure grant is narrower in resource scope (one
+container, not a database or a cache), but not in capability: `Storage Blob
+Data Contributor` reads, writes and deletes every blob in it. Sub-choices:
 
 - (i) The principal is an Entra **object ID** GUID (the lean), versus a name,
   which would need Graph.
@@ -422,8 +423,8 @@ new meanings is itself a G-api point: the proposal reuses
 `AuthModeUnsupported`, `IAMPrincipalRequired`, `NameCollision`,
 `ReconcileError` and `RotationNotApplicable`.
 
-Lean for D6 as a whole: all of (i) to (v) as stated, as one G-api review item.
-The user may take them separately.
+Lean for D6 as a whole: take (i) to (v) as the defaults stated, as one G-api
+review item; the user may answer them separately.
 
 **D7. Binding shape (G-api).** The keys above, with `type` still `s3`, and no
 S3 keys. Options: (a) keep `s3` with `cloud: azure` as the discriminator: one binding
@@ -435,10 +436,11 @@ type to the binding spec. Lean (a).
 
 **D8. Status identifiers (G-api).** Bucket: name and the container's ARM ID.
 BucketAccess: the role assignment's name and full ID. Options: (a) the ARM resource ID as
-`externalId` (the lean: it is the RBAC scope and an identity an admin can look
+`externalId` (it is the RBAC scope and an identity an admin can look
 up, but it is long and says nothing to a consumer); (b) the blob URL (a
 consumer can use it directly, but it is not an ARM identity and not the RBAC
-scope, and it repeats `endpoint` and `bucket`).
+scope, and it repeats `endpoint` and `bucket`). The same applies to the
+role assignment's `externalId` for BucketAccess. Lean (a).
 
 **D9. Prefix.** (a) Refuse `prefix` on Azure in v1 (the lean). (b) Support it
 with an ABAC condition on the role assignment, with the attribute names above.
@@ -505,9 +507,11 @@ from D10's role-assignment right.
   delete. The read action is needed for the empty-check listing (D15) and also
   lets a caller read blob contents. So, against (a), (b) removes only
   blob-level writes and deletes. Both options can still delete a container,
-  and with it every blob, and both can read blobs; in both, the D15 empty-check
-  and account soft delete are the mitigations. If D2(b) or D13(b) is chosen,
-  the role also needs the ARM account read. The admin must maintain the role, the action set is verified only
+  and with it every blob, and both can read blobs. Under D15(a), the
+  empty-check guards against a mistaken claim delete, not against a
+  compromised operator; account soft delete is the only recovery. If D2(b),
+  D4(b) or D13(b) is chosen, the custom role also needs
+  `Microsoft.Storage/storageAccounts/read`. The admin must maintain the role, and the action set is verified only
   against a real account, and an option-B SAS later (D5) would also need
   `generateUserDelegationKey` (`Storage Blob Delegator`) added.
 - (c) Account keys: full account authority and a secret to store.
