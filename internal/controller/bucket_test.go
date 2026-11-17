@@ -18,7 +18,6 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/conditions"
 	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
-	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"

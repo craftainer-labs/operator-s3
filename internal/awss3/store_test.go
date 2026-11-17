@@ -187,7 +187,11 @@ func TestFailuresAreCategories(t *testing.T) {
 			f.refuse[tc.key] = refusal{status, "Boom"}
 			err := tc.call(New(f.serve(t, "us-east-1")))
 			var apiErr *s3client.Error
-			if err == nil || !errors.As(err, &apiErr) || apiErr.Status != status || apiErr.Code != "Boom" {
+			code := "Boom"
+			if tc.name == "head" {
+				code = "" // a HEAD answer has no body, so no code
+			}
+			if err == nil || !errors.As(err, &apiErr) || apiErr.Status != status || apiErr.Code != code {
 				t.Errorf("%s/%d: %v", tc.name, status, err)
 				continue
 			}
