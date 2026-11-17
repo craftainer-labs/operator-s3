@@ -379,6 +379,9 @@ func TestADriftedBucketIsUpdated(t *testing.T) {
 	h.fake.reset()
 	h.reconcileOK(r, b)
 	h.fake.want(t, "UpdateBucket "+name)
+	h.fake.reset()
+	h.reconcileOK(r, b)
+	h.fake.wantNot(t, "CreateBucket", "UpdateBucket")
 }
 
 // atomicStore is a Store that writes the marker in the request that creates the

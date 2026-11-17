@@ -94,6 +94,9 @@ func TestBucketLifecycle(t *testing.T) {
 	}
 
 	// A bucket with another marker gets this claim's.
+	f.mu.Lock()
+	f.buckets["b1"]["iamConfiguration"] = map[string]any{"publicAccessPrevention": "inherited"}
+	f.mu.Unlock()
 	other := st
 	other.Tags = map[string]string{s3client.MarkerTag: "other"}
 	if err := s.UpdateBucket(ctx, up, other); err != nil || f.bucket("b1")["labels"].(map[string]any)[LabelMarker] != up.Marker {
@@ -428,7 +431,7 @@ func TestBucketsAreHardened(t *testing.T) {
 	if err = s.UpdateBucket(ctx, p, other); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := f.bucket("b1")["iamConfiguration"].(map[string]any); got["publicAccessPrevention"] != "inherited" {
+	if got, _ := f.bucket("b1")["iamConfiguration"].(map[string]any); got["publicAccessPrevention"] != "inherited" || got["uniformBucketLevelAccess"] != nil {
 		t.Errorf("a bucket of another claim was hardened: %+v", got)
 	}
 
