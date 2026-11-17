@@ -154,21 +154,3 @@ func (plainStore) ServerVersion(context.Context) (string, error) { return "v", n
 
 // otherServer is a server.CloudServer this operator does not own.
 type otherServer struct{ server.CloudServer }
-
-// A store that names a provider is refused until the cloud backend lands,
-// before any client is built.
-func TestProberRefusesACloudStore(t *testing.T) {
-	p, targets := probeFixture(&versionStore{})
-	for name, srv := range map[string]server.CloudServer{
-		"cluster":    &s3v1alpha1.ClusterObjectStore{Spec: s3v1alpha1.ClusterObjectStoreSpec{Provider: &s3v1alpha1.ClusterStoreProvider{}}},
-		"namespaced": &s3v1alpha1.ObjectStore{Spec: s3v1alpha1.ObjectStoreSpec{Provider: &s3v1alpha1.NamespacedStoreProvider{}}},
-	} {
-		_, err := probeVersion(context.Background(), p, srv, probeConn())
-		if !errors.Is(err, ErrCloudStore) || !errors.Is(err, server.ErrInvalidServer) {
-			t.Errorf("%s: %v", name, err)
-		}
-	}
-	if len(*targets) != 0 {
-		t.Errorf("%d clients built", len(*targets))
-	}
-}

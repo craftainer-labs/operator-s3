@@ -42,6 +42,7 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
+	"github.com/craftainer-labs/operator-s3/internal/awss3"
 	"github.com/craftainer-labs/operator-s3/internal/controller"
 	webhookv1alpha1 "github.com/craftainer-labs/operator-s3/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
@@ -176,6 +177,7 @@ var ErrNoOperatorNamespace = errors.New("cannot determine the operator namespace
 
 // controllerSettings are the flags the controllers need, validated.
 type controllerSettings struct {
+	mode      egress.Mode
 	egress    egress.Policy
 	deletion  common.DeletionPolicy
 	namespace string
@@ -206,7 +208,7 @@ func (s *settings) controllerSettings() (controllerSettings, error) {
 	}
 	ctrl.Log.WithName("setup").Info("controller settings", "egressMode", string(mode),
 		"defaultDataDeletionPolicy", string(policy), "operatorNamespace", ns)
-	return controllerSettings{egress: egress.NewPolicy(mode), deletion: policy, namespace: ns}, nil
+	return controllerSettings{mode: mode, egress: egress.NewPolicy(mode), deletion: policy, namespace: ns}, nil
 }
 
 // Option adjusts the manager's options; tests use it, the binary passes none.
@@ -344,7 +346,8 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 	cfg := controller.Config{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Recorder: mgr.GetEventRecorder(EventRecorderName),
 		ManagedBy: EventRecorderName, OperatorNamespace: cs.namespace, DefaultDeletionPolicy: cs.deletion,
-		Egress: cs.egress, NewStore: controller.NewClientStore, Cache: controller.NewStoreCache(storeCacheIdle),
+		Egress: cs.egress, EgressMode: cs.mode, NewStore: controller.NewClientStore, Cache: controller.NewStoreCache(storeCacheIdle),
+		NewAWSStore: controller.NewAWSStore, ProbeAWS: awss3.Probe,
 	}
 	steps = append(steps,
 		setupStep{"Bucket controller", (&controller.BucketReconciler{Config: cfg}).SetupWithManager},

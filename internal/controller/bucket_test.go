@@ -15,7 +15,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
-	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/conditions"
 	"github.com/craftainer-labs/lib-operator-go/pkg/egress"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
@@ -520,22 +519,6 @@ func TestStoreSpecOfBothKinds(t *testing.T) {
 	}
 	if _, err = h.cfg.fetchStore(context.Background(), h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "absent"}); err == nil {
 		t.Error("a missing namespaced store was found")
-	}
-}
-
-// A store with a provider is refused, once the connection settings are read,
-// until the cloud backend lands.
-func TestBackendRefusesACloudStore(t *testing.T) {
-	h := newHarness(t, common.DeletionRetain, func(s *s3v1alpha1.ClusterObjectStore) {
-		s.Spec.Endpoint = ""
-		s.Spec.AdminCredentialsSecretRef = nil
-		s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
-			Type: cloud.ProviderAWS, AWS: &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
-		}
-	})
-	_, err := h.cfg.backend(context.Background(), h.ns, h.ref())
-	if !errors.Is(err, ErrCloudStore) || !errors.Is(err, server.ErrInvalidServer) {
-		t.Errorf("cloud store: %v", err)
 	}
 }
 

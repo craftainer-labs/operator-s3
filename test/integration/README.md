@@ -25,6 +25,18 @@ this lane checks what those only claim, against the server:
 - keep-alive against the real server, and verified TLS (an untrusted CA and a
   wrong host name fail).
 
+The AWS store has a second set of tests, behind the build tags `integration`
+and `moto` (`moto_test.go`), against moto server pinned by digest in the same
+workflow. They create, read, update and delete buckets (both in `us-east-1` and
+in another region), check that a bucket with objects is kept, that a quota is
+refused, and the AWS probe (what it discovers, and the refusals of an endpoint
+override in strict mode and of credentials without a key). moto is reached at its
+container address (a private range: the egress policy blocks loopback) with
+`EGRESS_MODE=allow-private` set in the test's own wiring. moto does not enforce
+IAM and does not validate a web identity token, so IAM eventual consistency, a
+role's permissions and workload identity are not checked here. Run them with
+`MOTO_ENDPOINT=http://<moto address>:5000 go test -tags integration,moto -run TestMoto ./test/integration/...`.
+
 Files:
 
 - `server_test.go` — the environment, the helpers and the signed raw request.
