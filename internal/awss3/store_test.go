@@ -355,3 +355,10 @@ func TestVirtualHostedWithoutOverride(t *testing.T) {
 type roundTripper func(*http.Request) (*http.Response, error)
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// An error that carries no answer has no status.
+func TestStatusOfAnErrorWithoutAnAnswer(t *testing.T) {
+	if got := statusOf(errors.New("no answer")); got != 0 {
+		t.Errorf("status = %d", got)
+	}
+}
