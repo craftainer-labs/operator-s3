@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -216,9 +217,14 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 				s.Spec.Provider.AWS.IAMPath = path
 				rejected(create(s), "iamPath")
 			}
-			s = awsClusterStore("bad-boundary")
-			s.Spec.Provider.AWS.PermissionsBoundaryARN = "arn:aws:iam::123456789012:role/r"
-			rejected(create(s), "permissionsBoundaryARN")
+			s = awsClusterStore("managed-boundary")
+			s.Spec.Provider.AWS.PermissionsBoundaryARN = "arn:aws-cn:iam::aws:policy/PowerUserAccess"
+			Expect(create(s)).To(Succeed())
+			for i, arn := range []string{"arn:aws:iam::123456789012:role/r", "arn:aws:iam::awsx:policy/p", "arn:aws:iam::AWS:policy/p"} {
+				s = awsClusterStore(fmt.Sprintf("bad-boundary-%d", i))
+				s.Spec.Provider.AWS.PermissionsBoundaryARN = arn
+				rejected(create(s), "permissionsBoundaryARN")
+			}
 
 			n := awsStore("iam-target-namespaced")
 			n.Spec.Provider.AWS.IAMPath = "/ns/"
