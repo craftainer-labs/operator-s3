@@ -12,6 +12,7 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
+	"github.com/craftainer-labs/operator-s3/internal/awss3"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
@@ -30,6 +31,14 @@ var ErrInvalidLifecycle = errors.New("lifecycle rule ids must be unique")
 // (two requests that cannot be one transaction) is taken over, and one that
 // someone else made is not.
 const createIssued = "create-issued"
+
+// paramValidator is the optional interface of a Store that refuses parameters
+// it can never apply; *awss3.Store implements it.
+type paramValidator interface {
+	Validate(s3client.BucketParams) error
+}
+
+var _ paramValidator = (*awss3.Store)(nil)
 
 // BucketReconciler reconciles Bucket claims (a data kind).
 type BucketReconciler struct{ Config }
@@ -178,9 +187,7 @@ func (e *bucketExternal) Create(ctx context.Context, spec s3v1alpha1.BucketSpec)
 	// A store may refuse parameters it can never apply (an AWS store, a quota)
 	// before the intent is recorded: no create-issued for a claim that cannot
 	// be created.
-	if v, ok := e.be.store.(interface {
-		Validate(s3client.BucketParams) error
-	}); ok {
+	if v, ok := e.be.store.(paramValidator); ok {
 		if err := v.Validate(p); err != nil {
 			return nil, err
 		}

@@ -138,8 +138,9 @@ func (s *Store) head(ctx context.Context, name string) (bool, error) {
 }
 
 // Bucket reads the bucket name: its existence, tags, versioning and lifecycle
-// rules. The quota is always 0: S3 has none. A bucket of another account is
-// s3client.ErrBucketExists.
+// rules. The quota is always 0: S3 has none. A bucket in another region is
+// s3client.ErrBucketExists; one the credentials cannot see answers 403, an
+// authentication failure.
 func (s *Store) Bucket(ctx context.Context, name string) (s3client.BucketState, error) {
 	ok, err := s.head(ctx, name)
 	if err != nil || !ok {
