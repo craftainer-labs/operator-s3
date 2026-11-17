@@ -31,7 +31,7 @@ type ClusterStoreProvider struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.provider) || !has(self.adminCredentialsSecretRef)",message="adminCredentialsSecretRef is forbidden with a provider: the cloud credential is credentials"
 // +kubebuilder:validation:XValidation:rule="!has(self.provider) || (!has(self.region) && !has(self.pathStyle) && !has(self.backend))",message="region, pathStyle and backend are forbidden with a provider"
 // +kubebuilder:validation:XValidation:rule="!has(self.credentials) || has(self.provider)",message="credentials is allowed only with a provider"
-// +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != ”)",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
+// +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != '')",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
 type ClusterObjectStoreSpec struct {
 	common.CloudServerCommon `json:",inline"`
 	ObjectStoreConfig        `json:",inline"`

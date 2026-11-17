@@ -25,7 +25,7 @@ type Prober struct{ Config Config }
 
 var _ probe.CloudProber = Prober{}
 
-// Probe returns the server version of srv. A store that answers the
+// ProbeCloud returns the server version of srv. A store that answers the
 // authenticated call but names no version is healthy with an empty version
 // (RustFS fills the field today, but reachability and accepted credentials are
 // what the status promises). The client is built for the probe and its
