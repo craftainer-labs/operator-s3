@@ -44,11 +44,14 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   cannot reissue the same key. Instead `RotateBegin` keeps the key the binding
   Secret already holds and reuses it, when the Secret is controlled by the
   claim, a key is active, and the held key has a secret, exists on the user and
-  is neither `status.rotation.active` nor `status.rotation.previous`; every key that is neither it nor the active
-  one (the previous key too: IAM's two keys leave no room for it) is a leftover whose secret nobody holds and is deleted first. So a
-  crash between the Secret write and the status write neither deletes a key in
-  use nor leaves a third key to hit the limit. Reissuing a lost active key
-  keeps `status.rotation.previous`, still in its grace period.
+  is neither `status.rotation.active` nor `status.rotation.previous`. Every
+  other key, the previous one included, is a leftover whose secret nobody holds
+  and is deleted first: a rotation begins only after the last one finished, so
+  the previous key is out of its grace period, and IAM's two keys leave no room
+  to keep it. A crash between the Secret write and the status write therefore
+  neither deletes a key in use nor leaves a third key to hit the limit. Only
+  reissuing a lost active key (not a rotation) keeps
+  `status.rotation.previous`, still in its grace period.
 - **A bucket quota is refused.** A `Bucket` with `spec.quota` on an AWS store is
   `Synced=False`, reason `ReconcileError`, and nothing is changed. A quota
   cannot be read back, so an operator that applied one would update in a loop.
