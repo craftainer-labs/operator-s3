@@ -295,26 +295,6 @@ func TestServerVersion(t *testing.T) {
 	}
 }
 
-// The IAM methods wait for NKs3-1b.
-func TestIAMIsNotImplemented(t *testing.T) {
-	s := New(newFakeS3().serve(t, "us-east-1"))
-	ctx := context.Background()
-	var errs []error
-	_, err := s.User(ctx, "u")
-	errs = append(errs, err)
-	errs = append(errs, s.ApplyAccess(ctx, s3client.AccessParams{}, s3client.UserState{}))
-	_, err = s.KeyExists(ctx, "k")
-	errs = append(errs, err)
-	errs = append(errs, s.IssueKey(ctx, "u", "k", "s"), s.DeleteKey(ctx, "k"), s.DeleteAccess(ctx, "u", nil))
-	_, err = s.OwnedPolicies(ctx, "u")
-	errs = append(errs, err)
-	for i, err := range errs {
-		if !errors.Is(err, ErrNotImplemented) {
-			t.Errorf("method %d: %v", i, err)
-		}
-	}
-}
-
 // closer is an HTTP client that counts CloseIdleConnections.
 type closer struct {
 	http.Client

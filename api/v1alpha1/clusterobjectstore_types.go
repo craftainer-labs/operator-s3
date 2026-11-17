@@ -21,7 +21,7 @@ type ClusterStoreProvider struct {
 
 	// aws is the AWS block, set exactly when type is AWS.
 	// +optional
-	AWS *cloud.AWSClusterBlock `json:"aws,omitempty"`
+	AWS *ClusterAWSBlock `json:"aws,omitempty"`
 }
 
 // ClusterObjectStoreSpec defines the desired state of ClusterObjectStore.

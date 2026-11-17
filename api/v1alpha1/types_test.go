@@ -117,6 +117,13 @@ func TestStoreProviderAndCredentialsAccessors(t *testing.T) {
 	g.Expect(ns).To(BeEmpty())
 }
 
+func TestIAMPathOf(t *testing.T) {
+	g := NewWithT(t)
+	g.Expect(IAMTarget{}.IAMPathOf()).To(Equal(DefaultIAMPath))
+	g.Expect(DefaultIAMPath).To(Equal("/craftainer/"))
+	g.Expect(IAMTarget{IAMPath: "/team/a/"}.IAMPathOf()).To(Equal("/team/a/"))
+}
+
 func TestBucketAccessors(t *testing.T) {
 	g := NewWithT(t)
 	b := &Bucket{Spec: BucketSpec{

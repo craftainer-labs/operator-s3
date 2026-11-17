@@ -16,8 +16,8 @@ instance.
 Status: the `Bucket` and `BucketAccess` controllers are in place for RustFS
 stores, tested against an in-memory store and an HTTPS test server, and the
 RustFS client against a real RustFS with TLS in the integration lane (see
-"Testing"). An AWS store serves `Bucket` claims; its access keys come later
-(see "AWS stores").
+"Testing"). An AWS store serves `Bucket` and `BucketAccess` claims (see "AWS
+stores").
 
 ## API
 
@@ -234,16 +234,42 @@ request dials through the egress policy and the store's `proxyURL`, and
   `Bucket` with `spec.quota` on an AWS store is `Synced=False` with reason
   `ReconcileError` and the message "an AWS store has no bucket quota: remove
   spec.quota". Nothing is created or changed on the store until it is removed.
-- **`BucketAccess` is not available yet.** The IAM calls (users, policies, access
-  keys) arrive with the next item (NKs3-1b); until then a claim on an AWS store
-  reports `ReconcileError` ("access keys on an AWS store are not implemented
-  yet").
+- **`BucketAccess` is one IAM user per claim.** The user is named
+  `<namespace>-<name>-<hash>` (at most 64 characters, `HashShort`), created under
+  `provider.aws.iamPath` (default `/craftainer/`) with
+  `provider.aws.permissionsBoundaryARN` if set, and tagged `craftainer.dev/claim`
+  with the claim (`namespace/name/uid`). A user without that exact tag is never
+  adopted, changed or deleted: the claim is a `NameCollision`. The access policy
+  (the bucket's ARN, the claim's `access` and `prefix`) is an inline policy named
+  after the document's digest, so a change attaches the new one before the old
+  one is deleted. `status.externalName` is the user, `status.externalId` its ARN
+  and `status.rotation.active` the access key id; the binding Secret is the
+  usual `s3` binding plus `cloud: aws`. The path and the boundary apply when the
+  user is created; changing them later does not move or re-bound an existing
+  user. The policy ARNs use the `aws` partition (no China or GovCloud yet).
+- **Rotation uses the user's two access keys.** IAM generates the key and shows
+  the secret once. A rotation creates the second key, writes it to the binding
+  Secret, and after the grace period deletes every key but the new one. Before
+  creating a key, the operator deletes the keys that are not the active one: a
+  key whose secret was lost to a crash is never a reason to hit IAM's limit of
+  two. Delete order is keys, policies, user.
+- **IAM is eventually consistent.** A user or key created a moment ago may not
+  be visible to the next call, and a new key may not work at once. A call that
+  finds an entity missing right after the operator made it, or a change in
+  flight, makes the claim `Ready=False` and is retried shortly, never waited
+  for. A consumer should retry on `InvalidClientTokenId` for a few seconds after
+  a new key appears.
 - **Health.** The probe calls STS `GetCallerIdentity` and S3 `ListBuckets`
-  (the identity needs `s3:ListAllMyBuckets`), then writes only
-  `status.discovered.region` (the provider's region) and `status.discovered.endpoint`
-  (the override, or `https://s3.<region>.amazonaws.com`, with `.cn` for the China
-  partition). The account and the identity are not read into the status, and
-  `serverVersion` stays empty: S3 has none.
+  (the identity needs `s3:ListAllMyBuckets`), then writes
+  `status.discovered.region` (the provider's region), `status.discovered.accountId`
+  (from `GetCallerIdentity`) and `status.discovered.endpoint` (the override, or
+  `https://s3.<region>.amazonaws.com`, with `.cn` for the China partition; scheme
+  and host only, so an override's user name, password or path never reach the
+  status). The identity is not read into the status, and `serverVersion` stays
+  empty: S3 has none. The identity of the operator needs the IAM actions
+  `CreateUser`, `GetUser`, `DeleteUser`, `PutUserPolicy`, `DeleteUserPolicy`,
+  `ListUserPolicies`, `CreateAccessKey`, `ListAccessKeys`, `DeleteAccessKey` and
+  `TagUser` (with a permissions boundary, also `iam:PermissionsBoundary`).
 - **Known gap (a library limit, `lib-operator-go` v0.6.0).** An `endpointOverride`
   that the operator does not allow (it needs `EGRESS_MODE=allow-private`) and a
   target that is missing show as `Ready=False` with reason `ServerUnreachable`
@@ -252,9 +278,9 @@ request dials through the egress policy and the store's `proxyURL`, and
   reason, and the operator will report it then.
 - **What CI cannot check.** The integration lane runs the AWS store against
   moto server (see `test/integration`). moto does not enforce IAM and does not
-  validate a web identity token, so IAM eventual consistency, a role's actual
-  permissions and the workload identity credentials of a real cluster are not
-  verified by any test here.
+  validate a web identity token, so IAM eventual consistency, a role's or a permissions boundary's actual limits,
+  whether a key can really use the bucket and the workload identity credentials
+  of a real cluster are not verified by any test here.
 
 ### Known limits
 

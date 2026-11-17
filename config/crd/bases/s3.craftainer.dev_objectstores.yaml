@@ -154,6 +154,22 @@ spec:
                   aws:
                     description: aws is the AWS block, set exactly when type is AWS.
                     properties:
+                      iamPath:
+                        description: |-
+                          iamPath is the IAM path of the users the operator creates for
+                          BucketAccess claims, beginning and ending with a slash. Default
+                          /craftainer/.
+                        maxLength: 512
+                        pattern: ^/([!-~]+/)?$
+                        type: string
+                      permissionsBoundaryARN:
+                        description: |-
+                          permissionsBoundaryARN is the ARN of a managed policy set as the
+                          permissions boundary of those users, so that nothing they are granted
+                          can exceed it. Unset means no boundary.
+                        maxLength: 2048
+                        pattern: ^arn:[a-z-]+:iam::[0-9]{12}:policy/[!-~]+$
+                        type: string
                       region:
                         description: Region is the AWS region; the partition follows
                           from it.

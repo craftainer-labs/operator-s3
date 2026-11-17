@@ -29,6 +29,7 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/testenv"
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
+	"github.com/craftainer-labs/operator-s3/internal/awss3"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
@@ -65,7 +66,12 @@ var errStore = errors.New("store failed")
 type memUser struct {
 	enabled  bool
 	policies []string
+	// marker is the claim an AWS user is tagged with.
+	marker string
 }
+
+// memKey is an access key an AWS store generated.
+type memKey struct{ id, secret string }
 
 // memStore is a RustFS in memory behind Store. It records every call and
 // fails the methods named in fail with the error given.
@@ -77,7 +83,11 @@ type memStore struct {
 	keys    map[string]string
 	docs    map[string]string
 	fail    map[string]error
-	targets []s3client.Target
+	// generated are the access keys of the AWS user, in creation order (the
+	// tests use one user), and issued counts the keys ever created.
+	generated []memKey
+	issued    int
+	targets   []s3client.Target
 	// awsConfigs are the AWS configurations the stores on AWS were built from.
 	awsConfigs []aws.Config
 }
@@ -181,7 +191,9 @@ func (m *memStore) User(_ context.Context, name string) (s3client.UserState, err
 	if u == nil {
 		return s3client.UserState{}, nil
 	}
-	return s3client.UserState{Exists: true, Enabled: u.enabled, Policies: slices.Clone(u.policies)}, nil
+	return s3client.UserState{
+		Exists: true, Enabled: u.enabled, Policies: slices.Clone(u.policies), ARN: "arn:aws:iam::1:user/" + name, Marker: u.marker,
+	}, nil
 }
 
 func (m *memStore) ApplyAccess(_ context.Context, p s3client.AccessParams, _ s3client.UserState) error {
@@ -190,7 +202,7 @@ func (m *memStore) ApplyAccess(_ context.Context, p s3client.AccessParams, _ s3c
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.users[p.User] = &memUser{enabled: true, policies: []string{p.Policy}}
+	m.users[p.User] = &memUser{enabled: true, policies: []string{p.Policy}, marker: p.Marker}
 	m.docs[p.Policy] = string(p.PolicyDoc)
 	return nil
 }
@@ -248,6 +260,7 @@ func (m *memStore) DeleteAccess(_ context.Context, user string, keys []string) e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.users, user)
+	m.generated = nil
 	for _, k := range keys {
 		delete(m.keys, k)
 	}
@@ -256,6 +269,46 @@ func (m *memStore) DeleteAccess(_ context.Context, user string, keys []string) e
 			delete(m.docs, name)
 		}
 	}
+	return nil
+}
+
+// The generated keys of an AWS store: at most two, as IAM allows.
+
+func (m *memStore) Keys(_ context.Context, user string) ([]string, error) {
+	if err := m.enter("Keys " + user); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]string, len(m.generated))
+	for i, k := range m.generated {
+		ids[i] = k.id
+	}
+	return ids, nil
+}
+
+func (m *memStore) NewKey(_ context.Context, user string) (string, string, error) {
+	if err := m.enter("NewKey " + user); err != nil {
+		return "", "", err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.generated) >= 2 {
+		return "", "", errors.New("LimitExceeded")
+	}
+	m.issued++
+	k := memKey{id: fmt.Sprintf("AKIAMEM%013d", m.issued), secret: fmt.Sprintf("secret-%d-%s", m.issued, strings.Repeat("x", 20))}
+	m.generated = append(m.generated, k)
+	return k.id, k.secret, nil
+}
+
+func (m *memStore) RemoveKey(_ context.Context, user, id string) error {
+	if err := m.enter("RemoveKey " + user + " " + id); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.generated = slices.DeleteFunc(m.generated, func(k memKey) bool { return k.id == id })
 	return nil
 }
 
@@ -317,7 +370,7 @@ func newHarnessOps(t *testing.T, policy common.DeletionPolicy, mutate func(ops s
 			h.fake.targets = append(h.fake.targets, tg)
 			return h.fake, nil
 		},
-		NewAWSStore: func(cfg aws.Config) Store {
+		NewAWSStore: func(cfg aws.Config, _ ...awss3.Option) Store {
 			h.fake.mu.Lock()
 			defer h.fake.mu.Unlock()
 			h.fake.awsConfigs = append(h.fake.awsConfigs, cfg)

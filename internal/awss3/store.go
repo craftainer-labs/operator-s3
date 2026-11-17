@@ -4,9 +4,9 @@
 // the emulator endpoint of the tests) comes from pkg/cloud's Egress.AWS, so
 // every request dials through the egress policy.
 //
-// A Store has the method set of controller.Store. The IAM methods (users,
-// policies and access keys) are not implemented until NKs3-1b and answer
-// ErrNotImplemented. A bucket quota has no AWS equivalent, so a Store refuses a
+// A Store has the method set of controller.Store and of
+// controller.GeneratedKeyStore: the IAM users, policies and access keys of a
+// BucketAccess are in iam.go. A bucket quota has no AWS equivalent, so a Store refuses a
 // request that carries one (ErrQuotaUnsupported) rather than ignore it: the
 // bucket would never report the quota back and the claim would be updated
 // forever.
@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsiam "github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -35,9 +36,6 @@ import (
 )
 
 var (
-	// ErrNotImplemented is the answer of every IAM method: access keys on an
-	// AWS store arrive with NKs3-1b.
-	ErrNotImplemented = errors.New("access keys on an AWS store are not implemented yet")
 	// ErrQuotaUnsupported means the request carries a bucket quota, which S3
 	// cannot enforce. Remove spec.quota from the Bucket.
 	ErrQuotaUnsupported = errors.New("an AWS store has no bucket quota: remove spec.quota")
@@ -51,8 +49,12 @@ const defaultRegion = "us-east-1"
 // concurrent use.
 type Store struct {
 	api    *s3.Client
+	idp    *awsiam.Client
 	region string
 	hc     aws.HTTPClient
+	// iamPath and boundary are the path and the permissions boundary of the IAM
+	// users it creates (WithIAM).
+	iamPath, boundary string
 }
 
 // New builds the Store of an AWS configuration (see cloud.Egress.AWS). It makes
@@ -60,15 +62,21 @@ type Store struct {
 // Checksums are calculated only where S3 requires them, which an S3 compatible
 // emulator can parse. A configuration with a base endpoint (the emulator
 // override) addresses buckets path-style, because an emulator has no wildcard
-// DNS; AWS itself is addressed virtual-hosted.
-func New(cfg aws.Config) *Store {
+// DNS; AWS itself is addressed virtual-hosted. IAM and S3 share cfg, so the
+// emulator override and the egress policy apply to both.
+func New(cfg aws.Config, opts ...Option) *Store {
 	api := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.RetryMaxAttempts = 1
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		o.UsePathStyle = cfg.BaseEndpoint != nil
 	})
-	return &Store{api: api, region: cfg.Region, hc: cfg.HTTPClient}
+	idp := awsiam.NewFromConfig(cfg, func(o *awsiam.Options) { o.RetryMaxAttempts = 1 })
+	s := &Store{api: api, idp: idp, region: cfg.Region, hc: cfg.HTTPClient}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // CloseIdleConnections closes the idle connections of the Store's HTTP client;
@@ -368,30 +376,3 @@ func (s *Store) ServerVersion(ctx context.Context) (string, error) {
 	}
 	return "", s3client.ErrNoVersion
 }
-
-// The IAM methods wait for NKs3-1b.
-
-// User is not implemented.
-func (*Store) User(context.Context, string) (s3client.UserState, error) {
-	return s3client.UserState{}, ErrNotImplemented
-}
-
-// ApplyAccess is not implemented.
-func (*Store) ApplyAccess(context.Context, s3client.AccessParams, s3client.UserState) error {
-	return ErrNotImplemented
-}
-
-// KeyExists is not implemented.
-func (*Store) KeyExists(context.Context, string) (bool, error) { return false, ErrNotImplemented }
-
-// IssueKey is not implemented.
-func (*Store) IssueKey(context.Context, string, string, string) error { return ErrNotImplemented }
-
-// DeleteKey is not implemented.
-func (*Store) DeleteKey(context.Context, string) error { return ErrNotImplemented }
-
-// OwnedPolicies is not implemented.
-func (*Store) OwnedPolicies(context.Context, string) ([]string, error) { return nil, ErrNotImplemented }
-
-// DeleteAccess is not implemented.
-func (*Store) DeleteAccess(context.Context, string, []string) error { return ErrNotImplemented }

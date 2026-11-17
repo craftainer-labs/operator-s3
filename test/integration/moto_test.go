@@ -2,8 +2,9 @@
 
 package integration
 
-// The AWS store of NKs3-1a (internal/awss3 and the AWS probe of
-// internal/controller) against moto server, reached at its container address
+// The AWS store of NKs3-1a and NKs3-1b (internal/awss3, with its IAM users,
+// policies and access keys, and the AWS probe of internal/controller) against
+// moto server, reached at its container address
 // (a private range, never loopback: pkg/egress blocks loopback in both
 // modes) with EGRESS_MODE=allow-private in this test's own wiring only.
 //
@@ -12,7 +13,10 @@ package integration
 // changes and the 403 of a denied call are not exercised; and it does not
 // validate a web identity token with STS, so the workload identity credentials
 // of a real cluster (IRSA, Pod Identity) are not exercised either. They are
-// checked by a real AWS account, which no CI lane has.
+// checked by a real AWS account, which no CI lane has. For the IAM calls that
+// means the eventual consistency of a new user or key, a permissions boundary
+// that actually limits what a key can do, and the policy that really grants the
+// bucket access; moto stores them and answers for them, nothing more.
 
 import (
 	"context"
@@ -23,6 +27,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsiam "github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
@@ -187,7 +192,7 @@ func motoStoreObject(t *testing.T) *s3v1alpha1.ClusterObjectStore {
 	s := &s3v1alpha1.ClusterObjectStore{}
 	s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
 		Type: cloud.ProviderAWS,
-		AWS:  &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "us-west-2"}, EndpointOverride: motoEndpoint(t)},
+		AWS:  &s3v1alpha1.ClusterAWSBlock{AWSClusterBlock: cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "us-west-2"}, EndpointOverride: motoEndpoint(t)}},
 	}
 	s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret}
 	return s
@@ -197,7 +202,8 @@ func motoProber(mode egress.Mode) controller.Prober {
 	return controller.Prober{Config: controller.Config{Egress: egress.NewPolicy(mode), EgressMode: mode, ProbeAWS: awss3.Probe}}
 }
 
-// The probe asks STS and S3, and discovers the region and the endpoint only.
+// The probe asks STS and S3, and discovers the region, the endpoint and the
+// account.
 func TestMotoProbe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -205,7 +211,10 @@ func TestMotoProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}
-	want := map[string]string{controller.DiscoveredRegion: "us-west-2", controller.DiscoveredEndpoint: motoEndpoint(t)}
+	want := map[string]string{
+		controller.DiscoveredRegion: "us-west-2", controller.DiscoveredEndpoint: motoEndpoint(t),
+		controller.DiscoveredAccountID: "123456789012", // moto's default account
+	}
 	if res.Version != "" || len(res.Discovered) != len(want) {
 		t.Fatalf("result = %+v", res)
 	}
@@ -229,5 +238,93 @@ func TestMotoProbeRefusals(t *testing.T) {
 		libserver.CloudConnection{Credentials: map[string][]byte{cloud.KeyAWSAccessKeyID: []byte("test")}})
 	if !errors.Is(err, cloud.ErrCredentialsUnavailable) {
 		t.Errorf("credentials: %v", err)
+	}
+}
+
+// motoAccess is the IAM side of a BucketAccess for a fresh user.
+func motoAccess(user, bucket string, write bool) s3client.AccessParams {
+	doc := s3client.AccessPolicy(bucket, "app/", write)
+	return s3client.AccessParams{User: user, Policy: s3client.PolicyName(user, doc), PolicyDoc: doc, Marker: "ns/claim/uid"}
+}
+
+// A BucketAccess's IAM user: made with its tag, path and policy, its policy
+// replaced by a change of access, two keys through a rotation, and the user
+// deleted with its keys and policy; deleting again succeeds.
+func TestMotoAccessFlow(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	s := awss3.New(motoConfig(t, "us-east-1"), awss3.WithIAM("/craftainer/", ""))
+	t.Cleanup(s.CloseIdleConnections)
+	user := unique("moto-user")
+	t.Cleanup(func() { _ = s.DeleteAccess(context.Background(), user, nil) })
+
+	if st, err := s.User(ctx, user); err != nil || st.Exists {
+		t.Fatalf("absent user: %+v, %v", st, err)
+	}
+	read := motoAccess(user, "bkt", false)
+	if err := s.ApplyAccess(ctx, read, s3client.UserState{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	st, err := s.User(ctx, user)
+	if err != nil || !st.Exists || st.Marker != read.Marker || !strings.HasSuffix(st.ARN, ":user/craftainer/"+user) || len(st.Policies) != 1 || st.Policies[0] != read.Policy {
+		t.Fatalf("user = %+v, %v", st, err)
+	}
+
+	// The access changes: the new policy replaces the old one.
+	write := motoAccess(user, "bkt", true)
+	if err := s.ApplyAccess(ctx, write, st); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if owned, err := s.OwnedPolicies(ctx, user); err != nil || len(owned) != 1 || owned[0] != write.Policy {
+		t.Fatalf("owned = %v, %v", owned, err)
+	}
+
+	// A rotation: the second key, then the first one is deleted.
+	first, secret, err := s.NewKey(ctx, user)
+	if err != nil || first == "" || secret == "" {
+		t.Fatalf("first key: %q, %v", first, err)
+	}
+	second, _, err := s.NewKey(ctx, user)
+	if err != nil || second == first {
+		t.Fatalf("second key: %q, %v", second, err)
+	}
+	if ids, err := s.Keys(ctx, user); err != nil || len(ids) != 2 {
+		t.Fatalf("keys = %v, %v", ids, err)
+	}
+	if err := s.RemoveKey(ctx, user, first); err != nil {
+		t.Fatalf("remove key: %v", err)
+	}
+	if ids, err := s.Keys(ctx, user); err != nil || len(ids) != 1 || ids[0] != second {
+		t.Fatalf("keys after rotation = %v, %v", ids, err)
+	}
+
+	// The user goes with its key and policy.
+	if err := s.DeleteAccess(ctx, user, nil); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if st, err = s.User(ctx, user); err != nil || st.Exists {
+		t.Errorf("after delete: %+v, %v", st, err)
+	}
+	if err := s.DeleteAccess(ctx, user, nil); err != nil {
+		t.Errorf("delete of a deleted user: %v", err)
+	}
+}
+
+// A user made by someone else carries no claim tag, so the operator sees it as
+// not its own.
+func TestMotoUserWithoutTheTagIsNotOurs(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cfg := motoConfig(t, "us-east-1")
+	user := unique("moto-foreign")
+	api := awsiam.NewFromConfig(cfg)
+	if _, err := api.CreateUser(ctx, &awsiam.CreateUserInput{UserName: &user}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	t.Cleanup(func() { _, _ = api.DeleteUser(context.Background(), &awsiam.DeleteUserInput{UserName: &user}) })
+	s := awss3.New(cfg)
+	t.Cleanup(s.CloseIdleConnections)
+	if st, err := s.User(ctx, user); err != nil || !st.Exists || st.Marker != "" {
+		t.Errorf("user = %+v, %v", st, err)
 	}
 }

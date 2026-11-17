@@ -46,7 +46,7 @@ func newAWSHarness(t *testing.T, mutate func(*s3v1alpha1.ClusterObjectStore)) *h
 	h := newHarnessOps(t, common.DeletionRetain, func(ops string, s *s3v1alpha1.ClusterObjectStore) {
 		s.Spec.Endpoint, s.Spec.AdminCredentialsSecretRef = "", nil
 		s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
-			Type: cloud.ProviderAWS, AWS: &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
+			Type: cloud.ProviderAWS, AWS: &s3v1alpha1.ClusterAWSBlock{AWSClusterBlock: cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}}},
 		}
 		s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: awsCredsName, Namespace: ops}}
 		if mutate != nil {
@@ -112,7 +112,7 @@ func TestBackendBuildsTheAWSStoreOfANamespacedStore(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: awsCredsName, Namespace: h.ns}, Data: awsKeys("AKIATENANT"),
 	}))
 	st := &s3v1alpha1.ObjectStore{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: h.ns}}
-	st.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderAWS, AWS: &cloud.AWSBlock{Region: "ap-southeast-2"}}
+	st.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderAWS, AWS: &s3v1alpha1.NamespacedAWSBlock{AWSBlock: cloud.AWSBlock{Region: "ap-southeast-2"}}}
 	st.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: awsCredsName}}
 	h.must(env.Client.Create(ctx, st))
 
@@ -244,9 +244,9 @@ func (c *providerlessClient) Get(ctx context.Context, key client.ObjectKey, obj 
 func awsProber(probed *[]aws.Config, probeErr error, mode egress.Mode) Prober {
 	return Prober{Config: Config{
 		Egress: egress.NewPolicy(mode), EgressMode: mode,
-		ProbeAWS: func(_ context.Context, cfg aws.Config) error {
+		ProbeAWS: func(_ context.Context, cfg aws.Config) (string, error) {
 			*probed = append(*probed, cfg)
-			return probeErr
+			return testAccount, probeErr
 		},
 	}}
 }
@@ -254,7 +254,7 @@ func awsProber(probed *[]aws.Config, probeErr error, mode egress.Mode) Prober {
 func awsCluster(region, override string) *s3v1alpha1.ClusterObjectStore {
 	s := &s3v1alpha1.ClusterObjectStore{}
 	s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
-		Type: cloud.ProviderAWS, AWS: &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: region}, EndpointOverride: override},
+		Type: cloud.ProviderAWS, AWS: &s3v1alpha1.ClusterAWSBlock{AWSClusterBlock: cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: region}, EndpointOverride: override}},
 	}
 	s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret}
 	return s
@@ -264,24 +264,29 @@ func awsConn() server.CloudConnection {
 	return server.CloudConnection{Credentials: awsKeys("AKIAPROBE")}
 }
 
-// Only the region and the endpoint are discovered; the account and the
-// identity are not read, and the version stays empty.
-func TestProberDiscoversTheRegionAndEndpoint(t *testing.T) {
+const testAccount = "123456789012"
+
+// The region, the endpoint (scheme and host only) and the account are
+// discovered; the identity is not, and the version stays empty.
+func TestProberDiscoversTheRegionEndpointAndAccount(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
 		srv                   server.CloudServer
 		mode                  egress.Mode
 		region, endpoint, key string
 	}{
-		"cluster":   {awsCluster("us-west-2", ""), egress.ModeStrict, "us-west-2", "https://s3.us-west-2.amazonaws.com", "AKIAPROBE"},
-		"china":     {awsCluster("cn-north-1", ""), egress.ModeStrict, "cn-north-1", "https://s3.cn-north-1.amazonaws.com.cn", "AKIAPROBE"},
-		"emulator":  {awsCluster("us-east-1", "http://10.1.2.3:5000"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
+		"cluster":  {awsCluster("us-west-2", ""), egress.ModeStrict, "us-west-2", "https://s3.us-west-2.amazonaws.com", "AKIAPROBE"},
+		"china":    {awsCluster("cn-north-1", ""), egress.ModeStrict, "cn-north-1", "https://s3.cn-north-1.amazonaws.com.cn", "AKIAPROBE"},
+		"emulator": {awsCluster("us-east-1", "http://10.1.2.3:5000"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
+		// An override may carry credentials or a path; the status shows neither.
+		"userinfo":  {awsCluster("us-east-1", "http://user:hunter2@10.1.2.3:5000/a?b=c"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
 		"namespace": {awsNamespaced("eu-north-1"), egress.ModeStrict, "eu-north-1", "https://s3.eu-north-1.amazonaws.com", "AKIAPROBE"},
 	} {
 		var probed []aws.Config
 		res, err := awsProber(&probed, nil, tc.mode).ProbeCloud(ctx, tc.srv, awsConn())
-		if err != nil || res.Version != "" || len(res.Discovered) != 2 ||
-			res.Discovered[DiscoveredRegion] != tc.region || res.Discovered[DiscoveredEndpoint] != tc.endpoint {
+		if err != nil || res.Version != "" || len(res.Discovered) != 3 ||
+			res.Discovered[DiscoveredRegion] != tc.region || res.Discovered[DiscoveredEndpoint] != tc.endpoint ||
+			res.Discovered[DiscoveredAccountID] != testAccount {
 			t.Errorf("%s: %+v, %v", name, res, err)
 		}
 		if len(probed) != 1 || probed[0].Region != tc.region || retrieved(t, probed[0]).AccessKeyID != tc.key {
@@ -292,7 +297,7 @@ func TestProberDiscoversTheRegionAndEndpoint(t *testing.T) {
 
 func awsNamespaced(region string) *s3v1alpha1.ObjectStore {
 	s := &s3v1alpha1.ObjectStore{}
-	s.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderAWS, AWS: &cloud.AWSBlock{Region: region}}
+	s.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderAWS, AWS: &s3v1alpha1.NamespacedAWSBlock{AWSBlock: cloud.AWSBlock{Region: region}}}
 	s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret}
 	return s
 }
@@ -366,8 +371,25 @@ func TestCloudEgressCABundle(t *testing.T) {
 }
 
 func TestNewAWSStore(t *testing.T) {
-	if _, ok := NewAWSStore(aws.Config{Region: "us-east-1"}).(*awss3.Store); !ok {
+	st := NewAWSStore(aws.Config{Region: "us-east-1"}, awss3.WithIAM("/p/", ""))
+	if _, ok := st.(*awss3.Store); !ok {
 		t.Error("NewAWSStore does not build an awss3.Store")
+	}
+	if _, ok := st.(GeneratedKeyStore); !ok {
+		t.Error("an AWS Store does not generate its keys")
+	}
+}
+
+// bareEndpoint keeps the scheme and host; what does not parse is empty.
+func TestBareEndpoint(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://s3.eu-west-1.amazonaws.com": "https://s3.eu-west-1.amazonaws.com",
+		"http://u:p@10.0.0.1:5000/x?y=z":     "http://10.0.0.1:5000",
+		"http://[::1":                        "",
+	} {
+		if got := bareEndpoint(in); got != want {
+			t.Errorf("bareEndpoint(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

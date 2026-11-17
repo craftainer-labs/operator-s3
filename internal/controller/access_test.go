@@ -302,7 +302,13 @@ func TestAccessRefusesAWideningPrefix(t *testing.T) {
 
 func accessExt(t *testing.T, store *memStore) *accessExternal {
 	t.Helper()
-	be := &backend{store: store}
+	return accessExtOn(t, &backend{store: store, keys: store})
+}
+
+// accessExtOn is the External of a claim on the backend: RustFS (keys) or AWS
+// (gen).
+func accessExtOn(t *testing.T, be *backend) *accessExternal {
+	t.Helper()
 	claim := &s3v1alpha1.BucketAccess{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "tenant", UID: "uid-1"}}
 	e := newAccessExternal(be, claim)
 	e.bucket = "bkt"

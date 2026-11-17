@@ -13,18 +13,19 @@ import (
 // Probe checks that the account is usable: STS GetCallerIdentity (the
 // credentials are valid, and a role, if one is configured, was assumed) and S3
 // ListBuckets (the identity may use S3; it needs s3:ListAllMyBuckets). It
-// reads nothing from the answers: the account and the identity stay out of the
-// status. The idle connections of cfg's HTTP client are closed on return, so a
+// returns the account id of the answer, which the store reports as
+// status.discovered.accountId; the identity's own ARN stays out of the status.
+// The idle connections of cfg's HTTP client are closed on return, so a
 // configuration built for one probe leaves nothing behind.
-func Probe(ctx context.Context, cfg aws.Config) error {
+func Probe(ctx context.Context, cfg aws.Config) (account string, err error) {
 	defer closeIdle(cfg.HTTPClient)
 	api := sts.NewFromConfig(cfg, func(o *sts.Options) { o.RetryMaxAttempts = 1 })
-	if _, err := api.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
-		return fail(ctx, "STS GetCallerIdentity", err)
+	id, err := api.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		return "", fail(ctx, "STS GetCallerIdentity", err)
 	}
-	_, err := New(cfg).ServerVersion(ctx)
-	if errors.Is(err, s3client.ErrNoVersion) {
-		return nil
+	if _, err = New(cfg).ServerVersion(ctx); !errors.Is(err, s3client.ErrNoVersion) {
+		return "", err
 	}
-	return err
+	return aws.ToString(id.Account), nil
 }

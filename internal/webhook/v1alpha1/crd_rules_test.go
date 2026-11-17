@@ -66,7 +66,7 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 		s.Spec.AdminCredentialsSecretRef = nil
 		s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
 			Type: cloud.ProviderAWS,
-			AWS:  &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
+			AWS:  &s3v1alpha1.ClusterAWSBlock{AWSClusterBlock: cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}}},
 		}
 		return s
 	}
@@ -76,7 +76,7 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 		s.Spec.AdminCredentialsSecretRef = nil
 		s.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{
 			Type: cloud.ProviderAWS,
-			AWS:  &cloud.AWSBlock{Region: "eu-west-1"},
+			AWS:  &s3v1alpha1.NamespacedAWSBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
 		}
 		s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
 		return s
@@ -203,6 +203,29 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			s = awsClusterStore("gcp")
 			s.Spec.Provider.Type = cloud.ProviderGCP
 			rejected(create(s), "only AWS is supported as provider.type")
+		})
+
+		It("checks the IAM target of the AWS block", func() {
+			s := awsClusterStore("iam-target")
+			s.Spec.Provider.AWS.IAMPath = "/team/a/"
+			s.Spec.Provider.AWS.PermissionsBoundaryARN = "arn:aws:iam::123456789012:policy/boundary"
+			Expect(create(s)).To(Succeed())
+
+			for _, path := range []string{"craftainer/", "/craftainer", "//", "/has space/"} {
+				s = awsClusterStore("bad-path")
+				s.Spec.Provider.AWS.IAMPath = path
+				rejected(create(s), "iamPath")
+			}
+			s = awsClusterStore("bad-boundary")
+			s.Spec.Provider.AWS.PermissionsBoundaryARN = "arn:aws:iam::123456789012:role/r"
+			rejected(create(s), "permissionsBoundaryARN")
+
+			n := awsStore("iam-target-namespaced")
+			n.Spec.Provider.AWS.IAMPath = "/ns/"
+			Expect(create(n)).To(Succeed())
+			n = awsStore("bad-path-namespaced")
+			n.Spec.Provider.AWS.IAMPath = "ns"
+			rejected(create(n), "iamPath")
 		})
 
 		It("keeps an explicit pathStyle false", func() {

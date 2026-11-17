@@ -29,6 +29,15 @@ func UserName(ns, name string) string {
 	return naming.Tenant(ns, name, maxUserLen, "-", naming.HashLong)
 }
 
+// maxIAMUserLen is the IAM user name limit. An AWS user holds the ownership
+// marker as a tag, so its name carries the short hash.
+const maxIAMUserLen = 64
+
+// IAMUserName is the AWS IAM user behind a BucketAccess claim.
+func IAMUserName(ns, name string) string {
+	return naming.Tenant(ns, name, maxIAMUserLen, "-", naming.HashShort)
+}
+
 var keyEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // AccessKey is the access key id of generation seq of a claim: 20 characters

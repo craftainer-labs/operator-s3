@@ -19,8 +19,9 @@ func TestProbe(t *testing.T) {
 	cfg.HTTPClient = c
 	// closer wraps a client that reaches the fake.
 	c.Client = *http.DefaultClient
-	if err := Probe(context.Background(), cfg); err != nil {
-		t.Fatal(err)
+	account, err := Probe(context.Background(), cfg)
+	if err != nil || account != "123456789012" {
+		t.Fatalf("%q, %v", account, err)
 	}
 	if got := f.callList(); got != "STS\nGET /?" {
 		t.Errorf("calls:\n%s", got)
@@ -35,7 +36,7 @@ func TestProbe(t *testing.T) {
 func TestProbeFailures(t *testing.T) {
 	f := newFakeS3()
 	f.sts = http.StatusForbidden
-	err := Probe(context.Background(), f.serve(t, "us-east-1"))
+	_, err := Probe(context.Background(), f.serve(t, "us-east-1"))
 	var apiErr *s3client.Error
 	if !errors.Is(err, s3client.ErrConnAuth) || !errors.As(err, &apiErr) || strings.Contains(f.callList(), "GET") {
 		t.Errorf("sts: %v\n%s", err, f.callList())
@@ -43,7 +44,7 @@ func TestProbeFailures(t *testing.T) {
 
 	f = newFakeS3()
 	f.refuse["GET"] = refusal{http.StatusForbidden, "AccessDenied"}
-	err = Probe(context.Background(), f.serve(t, "us-east-1"))
+	_, err = Probe(context.Background(), f.serve(t, "us-east-1"))
 	if !errors.Is(err, s3client.ErrConnAuth) {
 		t.Errorf("s3: %v", err)
 	}

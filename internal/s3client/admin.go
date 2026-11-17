@@ -20,6 +20,10 @@ type UserState struct {
 	Exists, Enabled bool
 	// Policies are the policies attached to the user.
 	Policies []string
+	// ARN and Marker are what an AWS IAM user reports: its ARN, and the claim
+	// its MarkerTag tag names ("" for a user without the tag). A RustFS user
+	// holds neither.
+	ARN, Marker string
 }
 
 func (c *Client) admin(ctx context.Context, method, path string, query url.Values, body any) ([]byte, error) {
@@ -84,6 +88,9 @@ type AccessParams struct {
 	// Policy is the name of the policy document PolicyDoc.
 	Policy    string
 	PolicyDoc []byte
+	// Marker is the claim an AWS IAM user is tagged with (MarkerTag). RustFS
+	// users cannot hold one, so its Client ignores it.
+	Marker string
 }
 
 // run is admin without the answer.

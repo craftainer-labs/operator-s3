@@ -35,6 +35,21 @@ func TestDerivedNames(t *testing.T) {
 	}
 }
 
+// An AWS IAM user holds the marker as a tag, so its name carries the short hash
+// and may be as long as IAM allows.
+func TestIAMUserName(t *testing.T) {
+	long := IAMUserName(strings.Repeat("n", 63), strings.Repeat("c", 63))
+	if len(long) > maxIAMUserLen {
+		t.Errorf("user = %q", long)
+	}
+	if got := IAMUserName("team-a", "orders-app"); got != "team-a-orders-app-"+hashOf(got) || len(hashOf(got)) != 10 {
+		t.Errorf("user = %q: want the short hash (10 characters)", got)
+	}
+	if IAMUserName("team-a", "db") == IAMUserName("team", "a-db") {
+		t.Error("user names collide")
+	}
+}
+
 func hashOf(name string) string { return name[strings.LastIndex(name, "-")+1:] }
 
 func TestAccessKeyIsDeterministicPerGeneration(t *testing.T) {

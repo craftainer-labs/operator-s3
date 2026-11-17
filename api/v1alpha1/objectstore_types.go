@@ -97,7 +97,7 @@ type NamespacedStoreProvider struct {
 
 	// aws is the AWS block, set exactly when type is AWS.
 	// +optional
-	AWS *cloud.AWSBlock `json:"aws,omitempty"`
+	AWS *NamespacedAWSBlock `json:"aws,omitempty"`
 }
 
 // ObjectStoreSpec defines the desired state of ObjectStore.
