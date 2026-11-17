@@ -315,7 +315,7 @@ Every request dials through the egress policy and the store's `proxyURL`.
   permission to read that bucket: the safe side, as it is then never managed, and
   a delete of the claim leaves it alone), and an authentication failure when they
   cannot (as is a token endpoint that refuses the key; its 5xx and 429 answers
-  stay a connection failure). A rate-limit or quota 403 is neither. The
+  stay a connection failure). A rate-limit or quota 403 is not taken for a collision and, like any other 403, is reported as an authentication failure. The
   location is used at create only: a bucket in another location is not moved and
   is not reported.
 - **Lifecycle rules** have no ID on GCS: they are compared by prefix and days, so
