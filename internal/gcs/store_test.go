@@ -94,9 +94,6 @@ func TestBucketLifecycle(t *testing.T) {
 	}
 
 	// A bucket with another marker gets this claim's.
-	f.mu.Lock()
-	f.buckets["b1"]["iamConfiguration"] = map[string]any{"publicAccessPrevention": "inherited"}
-	f.mu.Unlock()
 	other := st
 	other.Tags = map[string]string{s3client.MarkerTag: "other"}
 	if err := s.UpdateBucket(ctx, up, other); err != nil || f.bucket("b1")["labels"].(map[string]any)[LabelMarker] != up.Marker {
@@ -425,6 +422,9 @@ func TestBucketsAreHardened(t *testing.T) {
 
 	// A bucket with another label is never hardened (the controller never gets
 	// here with one; the store does not rely on that).
+	f.mu.Lock()
+	f.buckets["b1"]["iamConfiguration"] = map[string]any{"publicAccessPrevention": "inherited"}
+	f.mu.Unlock()
 	other := st
 	other.Tags = map[string]string{s3client.MarkerTag: "other"}
 	f.reset()
