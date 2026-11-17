@@ -7,6 +7,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
 
@@ -32,11 +33,15 @@ var _ probe.CloudProber = Prober{}
 // connections are closed with it, not taken from the claims' store cache, so a
 // probe of a store nobody claims leaves nothing behind.
 //
-// A store on AWS is probed by probeAWS and reports what it discovered.
+// A store on AWS is probed by probeAWS and one on GCP by probeGCP; they report
+// what they discovered.
 func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, cc server.CloudConnection) (probe.CloudResult, error) {
 	spec, cs, err := storeConfigOf(srv)
 	if err != nil {
 		return probe.CloudResult{}, err
+	}
+	if cs.set && cs.kind == cloud.ProviderGCP {
+		return p.probeGCP(ctx, cs, cc)
 	}
 	if cs.set {
 		return p.probeAWS(ctx, cs, cc)
@@ -75,6 +80,28 @@ func (p Prober) probeAWS(ctx context.Context, cs cloudStore, cc server.CloudConn
 	return probe.CloudResult{Discovered: map[string]string{
 		DiscoveredRegion: cs.aws.Region, DiscoveredEndpoint: bareEndpoint(awsEndpoint(cs.aws)), DiscoveredAccountID: account,
 	}}, nil
+}
+
+// probeGCP builds the store's authorized client (which refuses an
+// endpointOverride the operator does not allow and a key that is not a
+// service_account) and lists one page of the project's buckets. Its errors
+// are not server.ErrInvalidServer, for the reason probeAWS gives. The project
+// is the account of the store, and the location, when the store names one, its
+// region.
+func (p Prober) probeGCP(ctx context.Context, cs cloudStore, cc server.CloudConnection) (probe.CloudResult, error) {
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithSink(nil))
+	g, err := p.Config.gcpClient(ctx, cs, cc)
+	if err != nil {
+		return probe.CloudResult{}, err
+	}
+	if err := p.Config.ProbeGCP(ctx, g, cs.gcp.Project); err != nil {
+		return probe.CloudResult{}, err
+	}
+	d := map[string]string{DiscoveredEndpoint: bareEndpoint(gcsEndpoint(cs.gcp)), DiscoveredAccountID: cs.gcp.Project}
+	if cs.gcp.Location != "" {
+		d[DiscoveredRegion] = cs.gcp.Location
+	}
+	return probe.CloudResult{Discovered: d}, nil
 }
 
 func (p Prober) probe(ctx context.Context, spec s3v1alpha1.ObjectStoreConfig, conn server.Connection) (string, error) {

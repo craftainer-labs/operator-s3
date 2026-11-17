@@ -13,6 +13,7 @@ import (
 
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 	"github.com/craftainer-labs/operator-s3/internal/awss3"
+	"github.com/craftainer-labs/operator-s3/internal/gcs"
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
@@ -38,7 +39,28 @@ type paramValidator interface {
 	Validate(s3client.BucketParams) error
 }
 
-var _ paramValidator = (*awss3.Store)(nil)
+// markerEncoder is the optional interface of a Store that cannot hold the
+// marker "<namespace>/<name>/<uid>" as it is: a GCS label value allows
+// lowercase letters, digits, underscore and dash, 63 characters at most. The
+// store returns the form it writes and reads back; the controller compares
+// that form.
+type markerEncoder interface {
+	EncodeMarker(marker string) string
+}
+
+// atomicMarker is the optional interface of a Store that writes the marker in
+// the request that creates the bucket: a bucket without a marker is then never
+// the claim's, whatever a create-issued record says.
+type atomicMarker interface {
+	MarkerAtCreate()
+}
+
+var (
+	_ atomicMarker   = (*gcs.Store)(nil)
+	_ paramValidator = (*awss3.Store)(nil)
+	_ paramValidator = (*gcs.Store)(nil)
+	_ markerEncoder  = (*gcs.Store)(nil)
+)
 
 // BucketReconciler reconciles Bucket claims (a data kind).
 type BucketReconciler struct{ Config }
@@ -104,7 +126,11 @@ func newBucketExternal(be *backend, claim *s3v1alpha1.Bucket) *bucketExternal {
 		name = s3client.BucketName(claim.Namespace, claim.Name)
 		claim.SetExternalName(name)
 	}
-	return &bucketExternal{be: be, claim: claim, name: name, marker: claimID(claim)}
+	marker := claimID(claim)
+	if enc, ok := be.store.(markerEncoder); ok {
+		marker = enc.EncodeMarker(marker)
+	}
+	return &bucketExternal{be: be, claim: claim, name: name, marker: marker}
 }
 
 // params turns the spec into what the store is asked for. Object lock needs
@@ -130,7 +156,9 @@ func (e *bucketExternal) params(spec s3v1alpha1.BucketSpec) (s3client.BucketPara
 // Observe implements lifecycle.External. A bucket whose marker names another
 // claim is refused. One with no marker is taken over by Update only when the
 // claim's status records that it issued the create (a Create that stopped
-// before it stamped the marker); otherwise it is refused as unmanaged.
+// before it stamped the marker) and the store tags the bucket in a request of
+// its own; a store that writes the marker in the create request (atomicMarker,
+// GCS) never takes one over. Otherwise it is refused as unmanaged.
 //
 // While the claim is being deleted a bucket that is not its own is not refused
 // but left out (it does not exist as far as the claim is concerned), so the
@@ -151,7 +179,8 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	if st.Marker() != "" && st.Marker() != e.marker {
 		return none, e.foreign(fmt.Errorf("%w: bucket %q belongs to another claim", lifecycle.ErrNameCollision, e.name))
 	}
-	if st.Marker() == "" && e.claim.GetExternalID() != createIssued {
+	_, atomic := e.be.store.(atomicMarker)
+	if st.Marker() == "" && (atomic || e.claim.GetExternalID() != createIssued) {
 		return none, e.foreign(fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name))
 	}
 	// A claim from before the create was recorded: the marker is the proof that
@@ -163,8 +192,8 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	if err != nil {
 		return none, err
 	}
-	upToDate := st.Marker() == e.marker && st.Versioning == p.Versioning && st.Quota == p.Quota &&
-		s3client.RulesEqual(st.Rules, p.Rules)
+	upToDate := st.Marker() == e.marker && !st.Drifted && st.Versioning == p.Versioning && st.Quota == p.Quota &&
+		s3client.RulesMatch(st, p.Rules)
 	return lifecycle.Observation[s3client.BucketState]{Exists: true, UpToDate: upToDate, Current: st}, nil
 }
 

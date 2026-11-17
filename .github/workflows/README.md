@@ -29,6 +29,10 @@
   runs the AWS store's tests (build tags `integration,moto`) against it at its
   private container address; moto does not enforce IAM or validate web identity
   tokens.
+  A third job starts fake-gcs-server (pinned by digest) and runs the GCS
+  store's tests (build tags `integration,gcs`) against it the same way; it keeps
+  only a bucket's name and versioning, enforces no IAM and validates no token
+  (NFR-0006).
 - `release-extras.yml` — manually dispatched with a `tag` input, right after
   each `Release`: `gh workflow run release-extras.yml -f tag=vX.Y.Z`. Publishes
   the Helm chart (OCI), the OLM bundle image and the file-based catalog image

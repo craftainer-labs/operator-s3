@@ -17,7 +17,7 @@ Status: the `Bucket` and `BucketAccess` controllers are in place for RustFS
 stores, tested against an in-memory store and an HTTPS test server, and the
 RustFS client against a real RustFS with TLS in the integration lane (see
 "Testing"). An AWS store serves `Bucket` and `BucketAccess` claims (see "AWS
-stores").
+stores"); a GCP store serves `Bucket` claims (see "GCP stores").
 
 ## API
 
@@ -42,7 +42,7 @@ rule are in the CRD schema (OpenAPI and CEL).
 ### Provider and credentials
 
 `ObjectStore` and `ClusterObjectStore` accept an optional `provider` (type
-`AWS`, with an `aws` block) and `credentials` next to the self-hosted fields:
+`AWS` with an `aws` block, or `GCP` with a `gcp` block) and `credentials` next to the self-hosted fields:
 
 - A store has either `adminCredentialsSecretRef` and `endpoint` (self-hosted
   RustFS) or a `provider`. They exclude each other, and `credentials` is
@@ -290,6 +290,58 @@ request dials through the egress policy and the store's `proxyURL`, and
   validate a web identity token, so IAM eventual consistency, a role's or a permissions boundary's actual limits,
   whether a key can really use the bucket and the workload identity credentials
   of a real cluster are not verified by any test here.
+
+### GCP stores
+
+A store with `provider.type: GCP` serves `Bucket` claims on the Cloud Storage
+buckets of a Google Cloud project, through the JSON API
+(`cloud.google.com/go/storage`). `provider.gcp.project` names the project and
+`provider.gcp.location` the location buckets are created in (empty is GCS's
+default, `US`); `endpointOverride` exists on `ClusterObjectStore` only and needs
+`EGRESS_MODE=allow-private`. `credentials` is WorkloadIdentity (the operator's
+own Application Default Credentials, `ClusterObjectStore` only) or a Secret with
+the key `credentials.json`, a `service_account` key (any other type is refused).
+Every request dials through the egress policy and the store's `proxyURL`.
+
+- **Buckets** are created with their ownership label, versioning and lifecycle
+  rules in one request. The label is `craftainer-dev-claim` (GCS label keys
+  cannot hold `.` or `/`) and its value is a digest of `namespace/name/uid`, since
+  the claim cannot be a label value. A bucket with another or no label is a
+  `NameCollision` and is never adopted, changed or deleted: the label is written
+  in the request that creates the bucket, so an unlabelled bucket is never a
+  claim's, whatever the status records. A bucket another project holds answers
+  `409` on create and `403` on read; a `403` is a `NameCollision` when the same
+  credentials can still list the project's buckets (also when they merely lack
+  permission to read that bucket: the safe side, as it is then never managed, and
+  a delete of the claim leaves it alone), and an authentication failure when they
+  cannot (as is a token endpoint that refuses the key; its 5xx and 429 answers
+  stay a connection failure). A rate-limit or quota 403 is not taken for a
+  collision and, like any other 403, is reported as an authentication failure.
+  A new bucket has uniform bucket-level access and public access prevention
+  enforced (as new S3 buckets have ACLs disabled and Block Public Access), and a
+  bucket of the claim that lost either is hardened again; a bucket without the
+  claim's label is never touched. The location is used at create only: a bucket in another location is not moved and
+  is not reported.
+- **Lifecycle rules** have no ID on GCS: they are compared by prefix and days, so
+  renaming a rule's `id` changes nothing. A rule of another shape is replaced.
+- **A bucket quota and `objectLock` are refused** (`Synced=False`, reason
+  `ReconcileError`): GCS has no quota, and no object lock that means what the
+  field means. Nothing is created or changed until they are removed.
+- **`BucketAccess` is not implemented.** A claim on a GCP store reports a fixed
+  "not implemented" error and creates nothing; deleting it works. Its API is
+  proposed in [ADR 0004](docs/adrs/0004-cloud-backends-aws-store.md), addendum 1,
+  and awaits the API review.
+- **Health.** The probe lists one page of the project's buckets (the identity
+  needs `storage.buckets.list`) and writes `status.discovered.accountId` (the
+  project ID), `endpoint` (`https://storage.googleapis.com`, or the override's
+  scheme and host) and `region` (the location, when set). `serverVersion` stays
+  empty. The known gap for an override the operator does not allow, above,
+  applies here too.
+- **What CI cannot check.** The integration lane runs the store against
+  fake-gcs-server, which keeps a bucket's name and versioning only and enforces
+  no IAM, so the label, the lifecycle rules and authentication are checked only
+  against a fake of the JSON API in the unit tests
+  ([NFR-0006](docs/nfrs/NFR-0006-gcp-behaviour-not-verified-by-fake-gcs-server.md)).
 
 ### Known limits
 

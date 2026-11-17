@@ -215,3 +215,29 @@ func TestClampDays(t *testing.T) {
 		}
 	}
 }
+
+// A store whose rules have no ID is compared by prefix and days; any other
+// store by ID too.
+func TestRulesMatch(t *testing.T) {
+	want := []Rule{{ID: "a", Prefix: "x/", Days: 7}, {ID: "b", Prefix: "x/", Days: 3}}
+	noIDs := BucketState{NoRuleIDs: true, Rules: []Rule{{Prefix: "x/", Days: 3}, {Prefix: "x/", Days: 7}}}
+	if !RulesMatch(noIDs, want) {
+		t.Error("rules without IDs do not match by prefix and days")
+	}
+	noIDs.Rules[0].Days = 4
+	if RulesMatch(noIDs, want) {
+		t.Error("different days match")
+	}
+	withIDs := BucketState{Rules: []Rule{{ID: "b", Prefix: "x/", Days: 3}, {ID: "a", Prefix: "x/", Days: 7}}}
+	if !RulesMatch(withIDs, want) {
+		t.Error("equal rules with IDs do not match")
+	}
+	withIDs.Rules[0].ID = "c"
+	if RulesMatch(withIDs, want) {
+		t.Error("a different ID matches")
+	}
+	// The wanted rules are not changed.
+	if want[0].ID != "a" {
+		t.Error("the IDs of the wanted rules were cleared")
+	}
+}

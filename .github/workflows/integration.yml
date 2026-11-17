@@ -12,6 +12,14 @@
 # does not enforce IAM), or real STS web identity (it does not validate tokens),
 # so those stay unverified by CI.
 #
+# The GCS store (NKs3-2a buckets): fake-gcs-server in a third job. It keeps a
+# bucket's name and versioning only (labels, lifecycle rules, the location and
+# the IAM configuration are accepted and dropped), enforces no IAM and validates
+# no token, and has no service accounts, bucket IAM policies or HMAC keys, so
+# the ownership label, the lifecycle rules, uniform access and public access
+# prevention, a refused credential and everything BucketAccess on GCP will need
+# stay unverified by CI.
+#
 # Instance-owned: listed in .github/template-sync-manifest.local.yml, so
 # template sync never replaces it. A step-started container rather than a
 # `services:` container, because a service container starts before the
@@ -39,6 +47,10 @@ env:
   # operator-db's moto job.
   # renovate: datasource=docker depName=motoserver/moto
   MOTO_IMAGE: motoserver/moto:5.2.5@sha256:59a1965d845249b04def37a0e2565f9cc6c44543cb89b68e90f28f344b3b0d1a
+  # fake-gcs-server (BSD-2-Clause): the bucket calls of the GCS store. Tested by
+  # tag and digest; an emulator, never linked (plan Track NK).
+  # renovate: datasource=docker depName=fsouza/fake-gcs-server
+  FAKE_GCS_IMAGE: fsouza/fake-gcs-server:1.56.1@sha256:797ce226d62f947c009dc40246b30cfb456b8473d8241407f9d6f2c04e4d69ef
   # The version scripts/develop.d/10-go.sh installs for the checks lane.
   # renovate: datasource=github-releases depName=golangci/golangci-lint
   GOLANGCI_LINT_VERSION: 2.15.0
@@ -192,3 +204,70 @@ jobs:
       - name: Remove the server
         if: always()
         run: docker rm -f moto
+
+  fake-gcs:
+    name: GCS store (fake-gcs-server)
+    # renovate: datasource=github-runners depName=ubuntu
+    runs-on: ${{ vars.CI_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # Same release and checksum check as the RustFS job; the GCS tests have
+      # their own build tag, so they are linted here.
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          dir="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64"
+          base="https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}"
+          tmp="$RUNNER_TEMP/golangci-lint"
+          mkdir -p "$tmp"
+          curl -LsSf -o "$tmp/$dir.tar.gz" "$base/$dir.tar.gz"
+          curl -LsSf -o "$tmp/checksums.txt" "$base/golangci-lint-${GOLANGCI_LINT_VERSION}-checksums.txt"
+          (cd "$tmp" && awk -v f="$dir.tar.gz" '$2 == f' checksums.txt | sha256sum -c -)
+          tar -xzf "$tmp/$dir.tar.gz" -C "$tmp"
+          echo "$tmp/$dir" >> "$GITHUB_PATH"
+
+      - name: Lint the GCS tests
+        run: golangci-lint run --build-tags integration,gcs ./test/integration/...
+
+      # The emulator is reached at its address on the default bridge network (a
+      # private range), never at loopback: pkg/egress blocks loopback in both
+      # modes. EGRESS_MODE=allow-private is in the test's own wiring (the egress
+      # it builds), not in the operator's configuration.
+      - name: Start fake-gcs-server
+        run: |
+          set -euo pipefail
+          docker run -d --name fake-gcs "$FAKE_GCS_IMAGE" -backend memory -scheme http -port 4443
+          gcs_ip=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' fake-gcs)
+          echo "FAKE_GCS_IP=$gcs_ip" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://$gcs_ip:4443/storage/v1/b?project=test-project" >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker logs fake-gcs
+          echo "fake-gcs-server did not become ready" >&2
+          exit 1
+
+      - name: Run the GCS store tests
+        run: |
+          set -euo pipefail
+          export FAKE_GCS_ENDPOINT="http://$FAKE_GCS_IP:4443"
+          go test -tags integration,gcs -race -count=1 -v -timeout 10m -run 'TestGCS' ./test/integration/...
+
+      - name: Show the server log
+        if: failure()
+        run: docker logs fake-gcs
+
+      - name: Remove the server
+        if: always()
+        run: docker rm -f fake-gcs

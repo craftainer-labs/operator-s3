@@ -85,3 +85,118 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   not reconciled. Changing them means a new claim.
 - What emulation cannot show is listed in
   [NFR-0005](../nfrs/NFR-0005-aws-behaviour-not-verified-by-moto.md).
+
+## Addendum 1: GCP stores (NKs3-2a)
+
+### Status
+
+The buckets part is Accepted when NKs3-2a merges. The `BucketAccess` part
+(below) is **Proposed, awaiting G-api**: `lib-operator-go` ADR 0002 section 16.7
+leaves the credential model, binding keys and status identifiers of
+`BucketAccess` on GCP to this operator's ADR and to the user's API review. It
+is not implemented.
+
+### Context
+
+A store with `provider.type: GCP` and a `provider.gcp` block (`project`, and
+optionally `location`, plus `endpointOverride` on a `ClusterObjectStore`)
+serves `Bucket` claims on Cloud Storage. The credential is a `service_account`
+key in a Secret (`credentials.json`) or the operator's own Application Default
+Credentials (WorkloadIdentity), resolved by `cloud.Egress.GCP`. GCS differs
+from S3 and from RustFS in ways that matter here:
+
+- A label key allows lowercase letters, digits, underscore and dash, and a
+  value the same up to 63 characters. `craftainer.dev/claim` and
+  `namespace/name/uid` cannot be a label.
+- A lifecycle rule has no ID.
+- There is no bucket quota, and no per-bucket object lock (retention is a
+  different feature with other semantics).
+- A bucket name another project holds answers `409` on create and `403` on
+  read, like a refused credential (told apart by a list, see below).
+- fake-gcs-server keeps a bucket's name and versioning only.
+
+### Decision
+
+- **A GCP store** (`internal/gcs`) implements the bucket methods of
+  `controller.Store` on `cloud.google.com/go/storage` over the JSON API. The
+  HTTP client comes from `cloud.Egress.GCP`, so every request dials through the
+  egress policy and the store's proxy. One attempt per call: the controller
+  retries.
+- **Ownership is a label** `craftainer-dev-claim`, written when the bucket is
+  created (the label, versioning and lifecycle go in one create request, so
+  there is no unmarked bucket to adopt). Its value is a digest of
+  `namespace/name/uid` (the first 20 bytes of its SHA-256, in hex), because the
+  claim cannot be a label value; the controller asks the store for that form
+  (`EncodeMarker`) before it compares. A bucket with another or no marker is a
+  `NameCollision`, as on AWS, and is never adopted, changed or deleted. Unlike
+  AWS, a bucket with no marker is not taken over even when the claim recorded the
+  create: GCS writes the label in the create request, so an unlabelled bucket is
+  never the claim's.
+- **Rules are compared by prefix and days.** A GCS rule has no ID, so a store
+  reports `NoRuleIDs` and the controller ignores the IDs of the claim's rules
+  when it compares. A rule of any other shape (another action, several
+  prefixes, another condition) is reported `Disabled` and replaced, as on AWS.
+- **A quota and object lock are refused** (`ReconcileError`, nothing is
+  changed), for the reason a quota is refused on AWS.
+- **The probe** lists one page of the project's buckets
+  (`storage.buckets.list`), the smallest read that shows the project exists and
+  the identity may use Cloud Storage in it. It discovers `accountId` (the
+  project ID), `endpoint` and, when the store names one, `region` (the
+  location). `location` is optional; empty is GCS's default, `US`.
+- **HTTP semantics.** `404` is absent, `409` on create is `NameCollision`, `409`
+  on delete is a bucket that is not empty (never emptied by the operator), and
+  `401` and `403` are an authentication failure of an unreachable store,
+  because GCS gives `403` both to refused credentials and to a bucket of
+  another project. A `403` on a bucket read is told apart by listing the
+  project's buckets: when that works the name is held elsewhere (`NameCollision`,
+  so a delete of the claim is not blocked). A token the service-account key
+  cannot get has no API status and is also an authentication failure.
+- **`BucketAccess` is not implemented.** `ApplyAccess` answers a fixed "not
+  implemented" error; finding and deleting access finds nothing, so a claim that
+  never got an account can be deleted.
+
+### BucketAccess on GCP: proposal (Proposed, awaiting G-api)
+
+1. **Credential model.** A per-claim service account (`iam/v1`) with HMAC keys
+   (`projects.hmacKeys`), used through the S3-interoperability endpoint
+   `storage.googleapis.com`. It is the only model that keeps the binding shape
+   and the consumer unchanged from AWS and RustFS, and GCS allows several HMAC
+   keys per service account, so a rotation overlaps for real: the new key is
+   issued first and the previous deleted after `gracePeriod`. Service account
+   JSON keys would need another binding (`credentials.json`) and are the
+   option Google discourages.
+2. **Binding keys.** The self-hosted set plus `cloud: gcp`: `endpoint`
+   (`https://storage.googleapis.com`, or the discovered value), `region` (the
+   store's location), `bucket`, `prefix`, `accessKeyId` and `secretAccessKey`
+   (the HMAC access id and secret), `pathStyle`. The service account's email is
+   in the binding Secret and in status only.
+3. **Status.** `externalName` is the service account id, `externalId` its
+   email, `rotation.active` the HMAC access id.
+4. **Marker and names.** A service account cannot carry a label, so the claim
+   is in its `description` (`craftainer.dev/claim=<namespace/name/uid>`; 256
+   characters at most). The account id is `naming.Tenant` with `-` and
+   `HashLong`, 30 characters at most, so the name is a second barrier. Only an
+   account with that exact description is adopted, changed or deleted. The
+   bucket label is `craftainer-dev-claim`, as above.
+5. **Grant.** A bucket IAM binding of `serviceAccount:<email>` to
+   `roles/storage.objectAdmin` (`access: ReadWrite`) or
+   `roles/storage.objectViewer` (`ReadOnly`), written with the policy's etag.
+   A `prefix` needs an IAM condition on the resource name. Delete order: HMAC
+   keys (inactive, then deleted), the binding, then the service account. A
+   service account or key that is not visible yet is a `lifecycle.PendingError`.
+
+Any change to section 16 that this needs (the binding keys, the status
+identifiers, the service account marker) goes back to G-api.
+
+### Consequences
+
+- What emulation cannot show is listed in
+  [NFR-0006](../nfrs/NFR-0006-gcp-behaviour-not-verified-by-fake-gcs-server.md).
+- The label and the lifecycle rules are checked against an httptest fake of
+  the JSON API, not against GCS, until a real project is used.
+- Buckets are created hardened (uniform bucket-level access, public access
+  prevention enforced) and a claim's own bucket that drifted is hardened again,
+  as Google recommends and as AWS gives new buckets (ACLs disabled, Block Public
+  Access). It fits the proposed IAM-role based BucketAccess. No API field.
+- The location is applied at create only; a bucket in another location is
+  neither moved nor reported.
