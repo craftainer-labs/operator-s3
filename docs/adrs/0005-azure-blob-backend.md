@@ -59,28 +59,35 @@ can be constrained to chosen roles and principal types), [Azurite][azurite].
 ## Decision
 
 The decisions below are the proposal. Each point that is public API or a
-trade-off is numbered `D1`...`D15` and listed again, with options, in
+trade-off is numbered `D1`...`D17` and listed again, with options, in
 "Decisions for the user"; a point that the platform forces is marked
 **forced**.
 
 ### 1. A bucket is a container in an existing account (D1)
 
 A `Bucket` on an Azure store is a blob container in the storage account the
-store names with `provider.azure.storageAccount`. **The operator never creates
-or changes a storage account**: the account, its network rules, encryption,
+store names with `provider.azure.storageAccount`. **Under the lean for D1 the
+operator never creates or changes a storage account**: the account, its network rules, encryption,
 versioning, lifecycle policy and public-access setting belong to the platform
 admin, the model ElastiCache user groups already follow. The blob endpoint is
-`https://<storageAccount>.blob.core.windows.net`; `endpointOverride` (cluster
-stores only, section 16) replaces it for an emulator or a sovereign cloud and
-is used as given. The container's ARM resource ID, used as `externalId` and as
+`https://<storageAccount>.blob.core.windows.net`. `endpointOverride` (cluster
+stores only, section 16.3) is test-only, as decided there: it is honoured only
+with `EGRESS_MODE=allow-private`, and in `strict` mode a store that sets it is
+`Ready=False` with reason `EndpointOverrideForbidden`. Here it points the
+store at Azurite; sovereign clouds are out of `v1alpha1` (section 16.8,
+decision 9). The container's ARM resource ID, used as `externalId` and as
 the RBAC scope, is built from the provider block alone (`subscriptionID`,
 `resourceGroup`, `storageAccount`, container name), with no ARM call.
 
 The container name is derived as for the other backends (`naming.Tenant`,
-`-`, `HashShort`, 63 characters), with doubled hyphens collapsed because Azure
-forbids them (**forced**; the hash keeps the name unique, and the exact
-collapse rule is verified in NKs3-3 as it is for the ElastiCache user id). The
-hash also satisfies the three-character minimum.
+`-`, `HashShort`, 63 characters), then sanitised because Azure allows only
+lowercase letters, digits and hyphens (**forced**; D14). A Kubernetes object
+name may contain `.`, which is mapped to `-`; doubled hyphens are collapsed;
+the first and last characters are made alphanumeric; the 63-character limit is
+applied after sanitising. The hash keeps the name unique (it is computed from
+the unsanitised identity, so `a.b` and `a-b` differ) and satisfies the
+three-character minimum. The exact rule is verified in NKs3-3, as it is for the
+ElastiCache user id.
 
 ### 2. Ownership is container metadata, set in the create request (D3)
 
@@ -97,10 +104,15 @@ GCS. Rules, as in ADR 0004:
   create (the marker is written atomically, so an unmarked container is never
   the claim's).
 - `409 ContainerAlreadyExists` on create, losing a race, is a `NameCollision`.
-- `404` on a read is absent. `403` is an authentication or authorization
-  failure, not a collision: with Entra a refused identity and a container in
-  another account cannot be told apart by the container (the account is fixed
-  by the store, so a `403` is always the credential, unlike S3 and GCS).
+  `409 ContainerBeingDeleted` (a container of that name was deleted within
+  roughly the last 30 seconds) is a `lifecycle.PendingError`, never a
+  collision, so a claim deleted and recreated promptly settles.
+- `404` on a read is absent. `403` is an authentication, authorization or
+  network-rule failure, not a collision. The account is fixed by the store, so
+  a `403` is never a name clash (unlike S3 and GCS), but it cannot tell a
+  refused identity from an account firewall or private-endpoint rule
+  (`AuthorizationFailure` covers both). The operator reports it without
+  choosing between them, and the README says so.
 
 ### 3. Hardening (D4)
 
@@ -143,13 +155,16 @@ immutability would need `armstorage`.
 
 New SDK modules come as a "dependencies alone" item before the code that uses
 them, as `clouddeps` already does for `azblob`: `armauthorization/v3` for
-option A, plus `armstorage` only if D2 or D4 choose it.
+option A, `azidentity` promoted from `// indirect` to a direct dependency (the
+store uses it), plus `armstorage` only if D2 or D4 choose it.
 
 ### 5. The store, the probe and delete (D13, D15)
 
 - **Store** `internal/azblob`, on the Azure SDK, implements the bucket methods
   of `controller.Store`. The HTTP transport comes from `cloud.Egress.Azure`
-  (`WorkloadIdentityCredential`, no `DefaultAzureCredential` chain), so every
+  (the credential comes from the store's `credentials`, `WorkloadIdentity` or
+  `Secret` as section 16.2 defines them, resolved by `cloud.Egress.Azure`; no
+  `DefaultAzureCredential` chain), so every
   request dials through the egress policy and the store's proxy. One attempt
   per call: the controller retries.
 - **Probe:** `ListContainers` with one result, the smallest read that shows the
@@ -217,7 +232,8 @@ Under A the specification is:
   fail on Entra replication lag.
 - **The assignment** is `Storage Blob Data Contributor` for `access:
   ReadWrite` and `Storage Blob Data Reader` for `ReadOnly` (built-in, so the
-  role definition IDs are fixed per tenant), scoped to the container's ARM ID.
+  role definition GUIDs are global constants; only the resource ID path that
+  wraps them is subscription-scoped), scoped to the container's ARM ID.
   Contributor includes delete, as the AWS policy for ReadWrite does; a custom
   role without delete is a later option (D6).
 - **Name and marker.** A role assignment name must be a GUID. It is derived
@@ -226,7 +242,13 @@ Under A the specification is:
   `PUT` is idempotent. The marker is the assignment's `description`
   (`craftainer.dev/claim=<namespace>/<name>/<uid>`). Only an assignment with
   that name and that description is read, changed or deleted: another is a
-  `NameCollision`, and one the operator did not make is never adopted. The
+  `NameCollision`, and one the operator did not make is never adopted. Azure
+  also refuses a second assignment with the same principal, role and scope
+  under a different name (`409 RoleAssignmentExists`). Two claims for the same
+  principal, container and access level, or an admin-made identical
+  assignment, therefore hit it; under the lean (D17) that is a `NameCollision`
+  that names no principal, and no assignment is shared between claims, so
+  deleting one claim never removes another's access. The
   scope (a container) is a second barrier: the operator touches no assignment
   at account or higher scope.
 - **Order.** Create the container's assignment, read it back, and report
@@ -240,7 +262,7 @@ Under A the specification is:
   service principals), so a compromised operator cannot grant itself or others
   `Owner`. The admin sets this up; the README documents the assignment and its
   condition, and the verification is manual because Azurite does not model
-  RBAC.
+  RBAC. The operator's own data-plane rights are a separate matter (D16).
 - **Prefix (D9).** `spec.prefix` is refused on Azure in v1
   (`Synced=False`, `ReconcileError`, nothing changed) rather than silently
   granting the whole container. An ABAC condition on the assignment can limit
@@ -284,7 +306,8 @@ would be a G-api change of its own.
 
 The integration job runs the store against Azurite (MIT, Microsoft's open
 source emulator), pinned by image digest, like moto and fake-gcs-server.
-Azurite 3.37.0 (2026-08-26, MIT) is the latest release at the time of writing; the pin (tag and
+Azurite 3.37.0 (GitHub release of 2026-08-26, MIT licence) is the latest release at the time
+of writing; the pin (tag and
 digest, with the Renovate comment) is chosen when the job is added, and is
 checked against the `mcr.microsoft.com/azure-storage/azurite` tag list then.
 It covers the container create/get/set-metadata/list/delete calls and the
@@ -307,7 +330,8 @@ implementation, in the form of NFR-0005 and NFR-0006) states:
   private endpoints, soft delete, immutability, versioning and lifecycle
   management.**
 
-The store takes an `azcore.TokenCredential`; in CI the test passes a static
+The store takes the resolved `azcore.TokenCredential` (what
+`cloud.Egress.Azure` produces for either credential source); in CI the test passes a static
 credential that returns a well-formed unsigned token, which `--oauth basic`
 accepts, so the operator needs no test-only code path in production (D12).
 
@@ -322,7 +346,8 @@ storage account (the lean). (b) The operator also creates storage accounts
 (a `StorageAccount` kind or a field), which brings account-level SKU,
 networking, keys and cost into a tenant-facing API and needs `Contributor` on
 the resource group. Lean (a): a tenant must not choose a billing and network
-boundary, and (a) is what `storageAccount` in section 16.3 already says.
+boundary, and (a) is what `storageAccount` in section 16.3 already says. This
+is a proposal until the user decides; section 1 states the lean's consequence.
 
 **D2. Bucket implementation scope.** (a) `azblob` only: bare private containers;
 `versioning`, `lifecycleRules`, `objectLock` and `quota` refused with
@@ -335,9 +360,12 @@ account; (b) gives parity with S3 for versioning and object lock. Lean (a),
 with (b) as a follow-up.
 
 **D3. Ownership marker (forced shape, one choice).** Metadata key
-`craftainer_claim`, value `<namespace>/<name>/<uid>` plain. Alternative: a
-digest, as GCS (needed there, not here). Lean: plain. No adoption, as in ADR
-0004.
+`craftainer_claim`, value `<namespace>/<name>/<uid>` plain. Options: (a) plain value, readable in the portal and by an admin debugging
+a collision, but it exposes namespace, name and UID to anyone who can read
+container metadata on the account (the same exposure as AWS tags); (b) a
+digest as on GCS, which hides them but needs a lookup to explain a collision.
+Lean (a). Adoption of a container without the marker stays refused either
+way, as in ADR 0004.
 
 **D4. Account public-access check.** (a) Document `allowBlobPublicAccess=false`
 as an admin prerequisite, harden only the container (the lean). (b) Read it
@@ -351,7 +379,8 @@ D2(b) if that is chosen.
 (B) User delegation SAS, short-lived, 7 days at most, needs rotation and a
 reload by the consumer, revocation only per account. (C) Service SAS from the
 account key (not recommended). Lean A for v1, B as a later opt-in for
-non-Azure consumers, C never. Rotation: A is `NonRotator`; B's rotation is a
+non-Azure consumers; C is not proposed because it hands the operator the
+account key (full account authority), and the user may still choose it. Rotation: A is `NonRotator`; B's rotation is a
 stateless re-sign, so the write-ahead gap in the plan's rotation-ordering
 research costs an early expiry, not an outage, but it still needs the NKlib-4
 design to avoid a window with no valid token if a status write is lost.
@@ -359,14 +388,21 @@ design to avoid a window with no valid token if a status write is lost.
 **D6. New BucketAccess API (G-api).** `spec.authMode` (`Password` | `IAM`,
 immutable, default `Password`) and `spec.iam.principal` on `BucketAccess`,
 with section 16.4's CEL, extended to s3 (section 16.4 names only db and
-cache). Sub-choices: (i) the principal is an Entra **object ID** GUID (the
+cache). This departs from section 16.4 and 16.5 in
+four places, each a G-api point: `iam.principal` carries an object ID GUID, not
+a principal name, and needs a CEL pattern (16.4 has only `maxLength: 320`);
+`username` in the binding is that GUID (16.5 says the name); `authMode` is a
+key of an s3 binding (16.5 lists it for db and cache only); and, as
+section 16.8 decision 6 decided no allow-list, a tenant can grant its bucket to
+any object ID in the tenant (the same exposure decided for db and cache, and
+for a data role only on its own container). Sub-choices: (i) the principal is an Entra **object ID** GUID (the
 lean; a name would need Graph); (ii) `Password` is refused on Azure with
 `AuthModeUnsupported` (the lean) versus defaulting to `IAM` on Azure stores
 (the controller cannot see the server in CEL, so a default per cloud is not
 expressible); (iii) the roles are the built-in `Storage Blob Data Contributor`
 and `Reader` (the lean), versus a custom role without delete, which the
-operator would have to create. No new condition type or reason is needed: the
-proposal reuses `AuthModeUnsupported`, `IAMPrincipalRequired`, `NameCollision`,
+operator would have to create. No new condition type or reason is proposed, but reusing
+existing reasons for new meanings is itself a G-api point: the proposal reuses `AuthModeUnsupported`, `IAMPrincipalRequired`, `NameCollision`,
 `ReconcileError` and `RotationNotApplicable`.
 
 **D7. Binding shape (G-api).** The keys above, with `type` still `s3`, and no
@@ -385,7 +421,7 @@ with an ABAC condition on the role assignment, with the attribute names above.
 mistake would silently over- or under-grant). Lean (a), then (b) after a manual
 check against a real account.
 
-**D10. The operator's own permissions.** (a) `Role Based Access Control
+**D10. The operator's role-assignment permissions.** (a) `Role Based Access Control
 Administrator` on the storage account, with an ABAC condition limiting the
 roles and principal types it may assign (the lean). (b) `User Access
 Administrator` or `Owner`: can grant itself anything. Needs the admin's setup;
@@ -403,12 +439,23 @@ static unsigned token credential injected through the store's constructor
 the store to accept a key credential in production code (not wanted: an extra
 credential type to maintain and to leak).
 
-**D13. Probe and discovered fields.** `ListContainers`, discovering
-`accountId` and `endpoint`, no region unless D2(b). Lean as stated.
+**D13. Probe and discovered fields.** (a) `ListContainers` with one result,
+discovering `accountId` and `endpoint`, no region (the lean; data plane only,
+the smallest read that proves the identity may use the account). (b) An ARM
+read of the account (`armstorage`), which adds `region` and the public-access
+setting but needs `Reader` and the extra dependency (it goes with D2(b) and
+D4(b)). (c) A `GetAccountInfo` call: it returns the SKU and account kind but
+no location, so it adds little over (a). Lean (a).
 
-**D14. Container name derivation.** `naming.Tenant`, `-`, `HashShort`, 63,
-doubled hyphens collapsed (forced by the platform; the exact rule is checked
-in NKs3-3). Listed so the rule is recorded; no choice involved.
+**D14. Container name sanitising.** The platform forces lowercase letters,
+digits and single hyphens, so some rule is needed; its shape is a choice.
+(a) Map `.` to `-`, collapse doubled hyphens, trim non-alphanumeric ends, cut
+to 63 after sanitising, keep `HashShort` computed from the unsanitised
+identity (the lean: readable, and unique through the hash). (b) Drop `.` and
+`-` runs entirely: shorter, less readable. (c) Name the container from the hash
+alone (`HashShort` plus a fixed prefix): always valid, but a person cannot
+tell whose container it is from the account. Lean (a); the exact rule is
+checked in NKs3-3.
 
 **D15. Delete semantics.** (a) Delete the container only when a listing
 (blobs, versions, snapshots) is empty, else report not-empty and leave it (the
@@ -417,6 +464,29 @@ leaves the container (safest, but a tenant cannot clean up and name reuse
 breaks). (c) Delete unconditionally, as Azure does by default (data loss on a
 mistaken claim delete; not recommended). Lean (a) with the soft-delete advice
 in the README.
+
+**D16. The operator's data-plane permissions.** Create, set-metadata,
+set-access-level, list and delete on containers, and the probe's list, all
+need data-plane or container-write rights on the account, which is separate
+from D10's role-assignment right. (a) `Storage Blob Data Owner` or `Data
+Contributor` on the account (the lean as the least work; the operator can then
+read and write every tenant's blobs, which a compromise exposes). (b) A custom
+role with only the container-level data actions (`containers/read`, `write`,
+`delete`, and the blob list action) and none of the blob read/write ones;
+narrower, but the admin must maintain it and the exact action set is verified
+only against a real account. (c) Account keys: not proposed (full authority
+and a secret to store). Lean (b) if the user accepts the manual verification,
+else (a). The README documents whichever is chosen.
+
+**D17. Duplicate role assignments.** Azure refuses two assignments with the
+same principal, role and scope. (a) Report `409 RoleAssignmentExists` as a
+`NameCollision` and share nothing (the lean: deleting one claim never removes
+another's access, but two claims for the same principal and container cannot
+coexist, and an admin's identical assignment blocks the claim). (b) Adopt the
+existing assignment and reference-count it across claims: allows sharing, but
+needs a marker per claim in status or a Secret and breaks the no-adoption
+rule. (c) Refuse a second `BucketAccess` for the same principal and container
+earlier, with a CEL or webhook rule. Lean (a).
 
 ## Consequences
 
