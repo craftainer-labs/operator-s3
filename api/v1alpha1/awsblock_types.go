@@ -22,7 +22,7 @@ type IAMTarget struct {
 	// permissions boundary of those users, so that nothing they are granted
 	// can exceed it. Unset means no boundary.
 	// +kubebuilder:validation:MaxLength=2048
-	// +kubebuilder:validation:Pattern=`^arn:[a-z-]+:iam::[0-9]{12}:policy/[!-~]+$`
+	// +kubebuilder:validation:Pattern=`^arn:[a-z-]+:iam::([0-9]{12}|aws):policy/[!-~]+$`
 	// +optional
 	PermissionsBoundaryARN string `json:"permissionsBoundaryARN,omitempty"`
 }

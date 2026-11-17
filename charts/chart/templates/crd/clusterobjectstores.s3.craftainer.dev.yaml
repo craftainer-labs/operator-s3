@@ -249,7 +249,7 @@ spec:
                           permissions boundary of those users, so that nothing they are granted
                           can exceed it. Unset means no boundary.
                         maxLength: 2048
-                        pattern: ^arn:[a-z-]+:iam::[0-9]{12}:policy/[!-~]+$
+                        pattern: ^arn:[a-z-]+:iam::([0-9]{12}|aws):policy/[!-~]+$
                         type: string
                       region:
                         description: Region is the AWS region; the partition follows

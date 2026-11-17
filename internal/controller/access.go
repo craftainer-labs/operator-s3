@@ -356,11 +356,13 @@ func (e *accessExternal) issueGenerated(ctx context.Context, keep string) (bindi
 // RustFS key to derive) and records it as the active one.
 func (e *accessExternal) issue(ctx context.Context, key string) (binding.Data, error) {
 	if e.be.gen != nil {
-		data, id, err := e.issueGenerated(ctx, "")
+		// The previous generation, still in its grace period, is kept: a
+		// stale listing may have hidden the key just made.
+		rs := e.claim.GetRotationStatus()
+		data, id, err := e.issueGenerated(ctx, rs.Previous)
 		if err != nil {
 			return nil, err
 		}
-		rs := e.claim.GetRotationStatus()
 		rs.Active = id
 		e.claim.SetRotationStatus(rs)
 		return data, nil

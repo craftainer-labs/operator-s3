@@ -79,7 +79,7 @@ func iamAnswer(w http.ResponseWriter, action, result string) {
 	if result != "" {
 		res = fmt.Sprintf("<%sResult>%s</%[1]sResult>", action, result)
 	}
-	_, _ = fmt.Fprintf(w, `<%sResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">%s<ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></%[1]sResponse>`, action, res)
+	_, _ = fmt.Fprintf(w, `<%sResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">%s<ResponseMetadata><RequestId>r</RequestId></ResponseMetadata></%[1]sResponse>`, action, res) //nolint:gosec // a test fake answering its own client with fixed XML
 }
 
 func (u *fakeUser) xml(name string) string {

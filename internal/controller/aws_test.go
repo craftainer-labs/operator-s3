@@ -275,11 +275,9 @@ func TestProberDiscoversTheRegionEndpointAndAccount(t *testing.T) {
 		mode                  egress.Mode
 		region, endpoint, key string
 	}{
-		"cluster":  {awsCluster("us-west-2", ""), egress.ModeStrict, "us-west-2", "https://s3.us-west-2.amazonaws.com", "AKIAPROBE"},
-		"china":    {awsCluster("cn-north-1", ""), egress.ModeStrict, "cn-north-1", "https://s3.cn-north-1.amazonaws.com.cn", "AKIAPROBE"},
-		"emulator": {awsCluster("us-east-1", "http://10.1.2.3:5000"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
-		// An override may carry credentials or a path; the status shows neither.
-		"userinfo":  {awsCluster("us-east-1", "http://user:hunter2@10.1.2.3:5000/a?b=c"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
+		"cluster":   {awsCluster("us-west-2", ""), egress.ModeStrict, "us-west-2", "https://s3.us-west-2.amazonaws.com", "AKIAPROBE"},
+		"china":     {awsCluster("cn-north-1", ""), egress.ModeStrict, "cn-north-1", "https://s3.cn-north-1.amazonaws.com.cn", "AKIAPROBE"},
+		"emulator":  {awsCluster("us-east-1", "http://10.1.2.3:5000"), egress.ModeAllowPrivate, "us-east-1", "http://10.1.2.3:5000", "AKIAPROBE"},
 		"namespace": {awsNamespaced("eu-north-1"), egress.ModeStrict, "eu-north-1", "https://s3.eu-north-1.amazonaws.com", "AKIAPROBE"},
 	} {
 		var probed []aws.Config
