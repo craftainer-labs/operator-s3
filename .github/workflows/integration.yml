@@ -5,10 +5,12 @@
 # `integration`); the certificates and the admin credentials come from the
 # same script the devcontainer stack uses (test/integration/gen-certs.sh).
 #
-# The AWS store (NKs3-1a): moto server in a second job. moto is an emulator and
-# is never linked; it cannot check IAM eventual consistency (it does not enforce
-# IAM) or real STS web identity (it does not validate tokens), so those stay
-# unverified by CI.
+# The AWS store (NKs3-1a buckets, NKs3-1b IAM users, policies and access keys):
+# moto server in a second job. moto is an emulator and is never linked; it
+# cannot check IAM eventual consistency (a new user or key is visible at once),
+# that a permissions boundary or a policy really limits what a key can do (it
+# does not enforce IAM), or real STS web identity (it does not validate tokens),
+# so those stay unverified by CI.
 #
 # Instance-owned: listed in .github/template-sync-manifest.local.yml, so
 # template sync never replaces it. A step-started container rather than a

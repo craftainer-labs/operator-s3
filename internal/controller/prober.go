@@ -45,11 +45,12 @@ func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, cc serve
 	return probe.CloudResult{Version: version}, err
 }
 
-// Keys of ServerStatus.Discovered an AWS store writes. The account is not one
-// of them: it would be an API detail beyond ADR 0002's drafts.
+// Keys of ServerStatus.Discovered an AWS store writes (ADR 0002, section 16).
+// The endpoint is the scheme and host only, whatever an endpointOverride holds.
 const (
-	DiscoveredRegion   = "region"
-	DiscoveredEndpoint = "endpoint"
+	DiscoveredRegion    = "region"
+	DiscoveredEndpoint  = "endpoint"
+	DiscoveredAccountID = "accountId"
 )
 
 // probeAWS builds the store's AWS configuration (which proves the credentials
@@ -67,11 +68,12 @@ func (p Prober) probeAWS(ctx context.Context, cs cloudStore, cc server.CloudConn
 	if err != nil {
 		return probe.CloudResult{}, err
 	}
-	if err := p.Config.ProbeAWS(ctx, cfg); err != nil {
+	account, err := p.Config.ProbeAWS(ctx, cfg)
+	if err != nil {
 		return probe.CloudResult{}, err
 	}
 	return probe.CloudResult{Discovered: map[string]string{
-		DiscoveredRegion: cs.aws.Region, DiscoveredEndpoint: awsEndpoint(cs.aws),
+		DiscoveredRegion: cs.aws.Region, DiscoveredEndpoint: bareEndpoint(awsEndpoint(cs.aws)), DiscoveredAccountID: account,
 	}}, nil
 }
 

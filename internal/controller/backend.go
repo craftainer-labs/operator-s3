@@ -62,9 +62,6 @@ type Store interface {
 	DeleteBucket(ctx context.Context, name string) error
 	User(ctx context.Context, name string) (s3client.UserState, error)
 	ApplyAccess(ctx context.Context, p s3client.AccessParams, cur s3client.UserState) error
-	KeyExists(ctx context.Context, key string) (bool, error)
-	IssueKey(ctx context.Context, user, key, secret string) error
-	DeleteKey(ctx context.Context, key string) error
 	OwnedPolicies(ctx context.Context, user string) ([]string, error)
 	DeleteAccess(ctx context.Context, user string, keys []string) error
 	// ServerVersion is the health probe: an authenticated read of the
@@ -72,22 +69,45 @@ type Store interface {
 	ServerVersion(ctx context.Context) (string, error)
 }
 
+// ChosenKeyStore is a Store whose access keys the operator chooses: the service
+// accounts of RustFS, whose key ids it derives from the claim, so that a retry
+// issues the same key instead of leaking another.
+type ChosenKeyStore interface {
+	KeyExists(ctx context.Context, key string) (bool, error)
+	IssueKey(ctx context.Context, user, key, secret string) error
+	DeleteKey(ctx context.Context, key string) error
+}
+
+// GeneratedKeyStore is a Store whose backend generates the access keys: AWS
+// IAM shows a key's secret once, when it is created, and allows two per user.
+// A caller that loses the answer deletes the key and creates another.
+type GeneratedKeyStore interface {
+	// Keys lists the key ids of the user.
+	Keys(ctx context.Context, user string) ([]string, error)
+	// NewKey creates a key and returns its id and secret.
+	NewKey(ctx context.Context, user string) (id, secret string, err error)
+	// RemoveKey deletes a key; one that is gone is success.
+	RemoveKey(ctx context.Context, user, id string) error
+}
+
 var (
-	_ Store = (*s3client.Client)(nil)
-	_ Store = (*awss3.Store)(nil)
+	_ Store             = (*s3client.Client)(nil)
+	_ ChosenKeyStore    = (*s3client.Client)(nil)
+	_ Store             = (*awss3.Store)(nil)
+	_ GeneratedKeyStore = (*awss3.Store)(nil)
 )
 
 // NewAWSStoreFunc builds the Store of an AWS configuration; production uses
 // NewAWSStore.
-type NewAWSStoreFunc func(cfg aws.Config) Store
+type NewAWSStoreFunc func(cfg aws.Config, opts ...awss3.Option) Store
 
-// NewAWSStore is the NewAWSStoreFunc of the operator: the S3 client of the
-// account.
-func NewAWSStore(cfg aws.Config) Store { return awss3.New(cfg) }
+// NewAWSStore is the NewAWSStoreFunc of the operator: the S3 and IAM clients of
+// the account.
+func NewAWSStore(cfg aws.Config, opts ...awss3.Option) Store { return awss3.New(cfg, opts...) }
 
-// ProbeAWSFunc checks that an AWS account is usable; production uses
-// awss3.Probe.
-type ProbeAWSFunc func(ctx context.Context, cfg aws.Config) error
+// ProbeAWSFunc checks that an AWS account is usable and returns its id;
+// production uses awss3.Probe.
+type ProbeAWSFunc func(ctx context.Context, cfg aws.Config) (account string, err error)
 
 // NewStoreFunc builds the Store of a target; production uses NewClientStore.
 type NewStoreFunc func(t s3client.Target) (Store, error)
@@ -134,8 +154,12 @@ type Config struct {
 // backend is a resolved store.
 type backend struct {
 	store Store
-	spec  s3v1alpha1.ObjectStoreConfig
-	conn  server.Connection
+	// keys serves a RustFS store and gen an AWS one (nil for the other): the
+	// kind of access key the backend issues.
+	keys ChosenKeyStore
+	gen  GeneratedKeyStore
+	spec s3v1alpha1.ObjectStoreConfig
+	conn server.Connection
 	// host is the host of the store's endpoint, for the audit log.
 	host string
 }
@@ -146,6 +170,7 @@ type cloudStore struct {
 	set   bool
 	scope cloud.Scope
 	aws   cloud.AWSClusterBlock
+	iam   s3v1alpha1.IAMTarget
 	creds *cloud.Credentials
 }
 
@@ -158,7 +183,7 @@ func clusterCloud(s *s3v1alpha1.ClusterObjectStore) (cloudStore, error) {
 	if p.Type != cloud.ProviderAWS || p.AWS == nil {
 		return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 	}
-	return cloudStore{set: true, scope: cloud.ScopeCluster, aws: *p.AWS, creds: s.Spec.Credentials}, nil
+	return cloudStore{set: true, scope: cloud.ScopeCluster, aws: p.AWS.AWSClusterBlock, iam: p.AWS.IAMTarget, creds: s.Spec.Credentials}, nil
 }
 
 // namespacedCloud reads the provider of an ObjectStore. It has no
@@ -172,7 +197,7 @@ func namespacedCloud(s *s3v1alpha1.ObjectStore) (cloudStore, error) {
 		return cloudStore{}, fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 	}
 	return cloudStore{
-		set: true, scope: cloud.ScopeNamespaced, aws: cloud.AWSClusterBlock{AWSBlock: *p.AWS},
+		set: true, scope: cloud.ScopeNamespaced, aws: cloud.AWSClusterBlock{AWSBlock: p.AWS.AWSBlock}, iam: p.AWS.IAMTarget,
 		creds: s.Spec.Credentials.AsCredentials(),
 	}, nil
 }
@@ -222,19 +247,37 @@ func (c Config) awsConfig(ctx context.Context, cs cloudStore, cc server.CloudCon
 func (c Config) awsBackend(ctx context.Context, cacheKey string, obj storeObject, cc server.CloudConnection) (*backend, error) {
 	spec := obj.spec
 	spec.Region = obj.cloud.aws.Region
-	b := &backend{spec: spec, conn: cc.Connection, host: hostOf(awsEndpoint(obj.cloud.aws))}
+	// AWS itself is addressed virtual-hosted; an emulator, which has no
+	// wildcard DNS, path-style.
+	pathStyle := obj.cloud.aws.EndpointOverride != ""
+	spec.PathStyle = &pathStyle
+	endpoint := awsEndpoint(obj.cloud.aws)
+	b := &backend{spec: spec, conn: cc.Connection, host: hostOf(endpoint)}
+	b.conn.Endpoint = bareEndpoint(endpoint)
 	var err error
 	b.store, err = c.Cache.Get(cacheKey, awsStamp(obj, cc), func() (Store, error) {
 		cfg, err := c.awsConfig(ctx, obj.cloud, cc)
 		if err != nil {
 			return nil, err
 		}
-		return c.NewAWSStore(cfg), nil
+		return c.NewAWSStore(cfg, awss3.WithIAM(obj.cloud.iam.IAMPathOf(), obj.cloud.iam.PermissionsBoundaryARN)), nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
 	}
+	b.gen, _ = b.store.(GeneratedKeyStore)
 	return b, nil
+}
+
+// bareEndpoint is the scheme and host of an endpoint, without the userinfo, path
+// or query: it goes into the binding Secret and the store's status, where an
+// endpointOverride's credentials must not. "" for one that does not parse.
+func bareEndpoint(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }
 
 // hostOf is the host of an endpoint, for the audit log; "" for one that does
@@ -303,6 +346,7 @@ func (c Config) backend(ctx context.Context, ns string, ref common.ServerRef) (*
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
 	}
+	b.keys, _ = b.store.(ChosenKeyStore)
 	u, _ := url.Parse(conn.Endpoint) // the store accepted it, so it parses
 	b.host = u.Host
 	return b, nil

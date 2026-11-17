@@ -179,10 +179,19 @@ func (r *AccessReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // accessExternal is the lifecycle.Rotator of one BucketAccess (ADR 0002,
-// section 8): an IAM user with the bucket policy, and one service account
-// per generation. A service account inherits the policy of its user, and its
-// access key is derived from the claim's UID and the rotation sequence, so a
-// retry after a crash reissues the same key.
+// section 8): an IAM user with the bucket policy, and one access key per
+// generation.
+//
+// On RustFS a key is a service account of the user. It inherits the policy of
+// its user, and its key id is derived from the claim's UID and the rotation
+// sequence, so a retry after a crash reissues the same key.
+//
+// On AWS (be.gen is set) the key is an IAM access key. IAM generates the key id
+// and shows the secret once, so nothing can be derived and a key whose answer
+// was lost cannot be recovered. status.rotation.active holds the active key id.
+// IAM allows two keys per user, so every issue first deletes the keys that are
+// not the active one: a key left by a crashed rotation, or one whose secret is
+// lost, is never a reason to hit the limit.
 type accessExternal struct {
 	be     *backend
 	claim  *s3v1alpha1.BucketAccess
@@ -204,6 +213,9 @@ func newAccessExternal(be *backend, claim *s3v1alpha1.BucketAccess) *accessExter
 	user := claim.GetExternalName()
 	if user == "" {
 		user = s3client.UserName(claim.Namespace, claim.Name)
+		if be.gen != nil {
+			user = s3client.IAMUserName(claim.Namespace, claim.Name)
+		}
 		claim.SetExternalName(user)
 	}
 	return &accessExternal{be: be, claim: claim, user: user}
@@ -212,8 +224,25 @@ func newAccessExternal(be *backend, claim *s3v1alpha1.BucketAccess) *accessExter
 // key is the access key of generation seq.
 func (e *accessExternal) key(seq int64) string { return s3client.AccessKey(string(e.claim.UID), seq) }
 
-// activeKey is the access key of the generation the binding Secret holds.
-func (e *accessExternal) activeKey() string { return e.key(e.claim.GetRotationStatus().Sequence) }
+// activeKey is the access key of the generation the binding Secret holds: the
+// one derived from the sequence on RustFS, the one status.rotation.active
+// records on AWS ("" before the first is issued).
+func (e *accessExternal) activeKey() string {
+	rs := e.claim.GetRotationStatus()
+	if e.be.gen != nil {
+		return rs.Active
+	}
+	return e.key(rs.Sequence)
+}
+
+// keyExists reports whether the active key is on the store.
+func (e *accessExternal) keyExists(ctx context.Context, key string) (bool, error) {
+	if e.be.gen == nil {
+		return e.be.keys.KeyExists(ctx, key)
+	}
+	ids, err := e.be.gen.Keys(ctx, e.user)
+	return key != "" && slices.Contains(ids, key), err
+}
 
 // policy builds the access policy and its name, refusing a prefix that would
 // widen it.
@@ -232,7 +261,7 @@ func (e *accessExternal) params(spec s3v1alpha1.BucketAccessSpec) (s3client.Acce
 	}
 	// The user's own secret key is never handed out: the keys of the binding
 	// are service accounts, and a key nobody holds cannot be used to log in.
-	return s3client.AccessParams{User: e.user, Secret: newSecret(), Policy: name, PolicyDoc: doc}, nil
+	return s3client.AccessParams{User: e.user, Secret: newSecret(), Policy: name, PolicyDoc: doc, Marker: claimID(e.claim)}, nil
 }
 
 // newSecret is a 40-character secret key, the longest RustFS accepts.
@@ -258,11 +287,20 @@ func (e *accessExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketAcce
 	if !us.Exists {
 		return e.leftovers(ctx)
 	}
-	if e.claim.GetExternalID() == "" {
+	// An IAM user holds the claim as a tag, which proves it is this claim's
+	// whatever the status says; its ARN is the claim's external ID.
+	owned := e.claim.GetExternalID() != ""
+	if e.be.gen != nil {
+		owned = us.Marker == claimID(e.claim)
+	}
+	if !owned {
 		return none, fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.user)
 	}
+	if e.be.gen != nil {
+		e.claim.SetExternalID(us.ARN)
+	}
 	key := e.activeKey()
-	exists, err := e.be.store.KeyExists(ctx, key)
+	exists, err := e.keyExists(ctx, key)
 	if err != nil {
 		return none, err
 	}
@@ -290,11 +328,47 @@ func (e *accessExternal) leftovers(ctx context.Context) (lifecycle.Observation[A
 	return lifecycle.Observation[AccessState]{Exists: true}, nil
 }
 
+// issueGenerated creates an IAM access key, after deleting every key but keep:
+// they are leftovers whose secret nobody holds, and IAM allows two keys. It
+// returns the binding data and the key id.
+func (e *accessExternal) issueGenerated(ctx context.Context, keep string) (binding.Data, string, error) {
+	ids, err := e.be.gen.Keys(ctx, e.user)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, id := range ids {
+		if id == keep {
+			continue
+		}
+		if err := e.be.gen.RemoveKey(ctx, e.user, id); err != nil {
+			return nil, "", err
+		}
+	}
+	id, secret, err := e.be.gen.NewKey(ctx, e.user)
+	if err != nil {
+		return nil, "", err
+	}
+	return e.data(id, secret), id, nil
+}
+
 // issue sets the secret key of the service account key and returns the
-// binding data for it.
+// binding data for it; on AWS it creates a new key (the one named is only the
+// RustFS key to derive) and records it as the active one.
 func (e *accessExternal) issue(ctx context.Context, key string) (binding.Data, error) {
+	if e.be.gen != nil {
+		// The previous generation, still in its grace period, is kept, so a
+		// listing that has not caught up with a rotation never cuts it off.
+		rs := e.claim.GetRotationStatus()
+		data, id, err := e.issueGenerated(ctx, rs.Previous)
+		if err != nil {
+			return nil, err
+		}
+		rs.Active = id
+		e.claim.SetRotationStatus(rs)
+		return data, nil
+	}
 	secret := newSecret()
-	if err := e.be.store.IssueKey(ctx, e.user, key, secret); err != nil {
+	if err := e.be.keys.IssueKey(ctx, e.user, key, secret); err != nil {
 		return nil, err
 	}
 	e.claim.SetExternalID(key)
@@ -373,6 +447,13 @@ func (e *accessExternal) Delete(ctx context.Context, _ AccessState) error {
 // RotateBegin implements lifecycle.Rotator: the next generation's service
 // account. Its key follows from the sequence, so it is the same on a retry.
 func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAccessSpec, _ AccessState, st lifecycle.RotationState) (binding.Data, lifecycle.Generation, error) {
+	if e.be.gen != nil {
+		// The second key of the user. Every other key is a leftover of a
+		// crashed rotation (its secret was never written to the binding
+		// Secret) and goes first, so a retry never hits IAM's limit of two.
+		data, id, err := e.issueGenerated(ctx, string(st.Active))
+		return data, lifecycle.Generation(id), err
+	}
 	next := e.key(st.Sequence + 1)
 	data, err := e.issue(ctx, next)
 	if err != nil {
@@ -385,17 +466,41 @@ func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAcc
 // the one of the active generation, and the previous one is the sequence
 // before it. Deleting a key that is gone succeeds.
 func (e *accessExternal) RotateFinish(ctx context.Context, _ s3v1alpha1.BucketAccessSpec, _ AccessState, st lifecycle.RotationState) error {
+	if e.be.gen != nil {
+		return e.retireOthers(ctx, string(st.Active))
+	}
 	if st.Sequence < 1 {
 		return nil
 	}
-	return e.be.store.DeleteKey(ctx, e.key(st.Sequence-1))
+	return e.be.keys.DeleteKey(ctx, e.key(st.Sequence-1))
+}
+
+// retireOthers deletes every key of the user but the active one: the previous
+// generation, and any a crashed rotation left. With no active key recorded it
+// deletes nothing.
+func (e *accessExternal) retireOthers(ctx context.Context, active string) error {
+	if active == "" {
+		return nil
+	}
+	ids, err := e.be.gen.Keys(ctx, e.user)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if id != active {
+			if err := e.be.gen.RemoveKey(ctx, e.user, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // data is the s3 binding of one service account (ADR 0002, section 7). The CA
 // is the store's bundle.
 func (e *accessExternal) data(key, secret string) binding.Data {
 	pathStyle := e.be.spec.PathStyleOf()
-	return binding.Data{
+	d := binding.Data{
 		"endpoint":        []byte(e.be.conn.Endpoint),
 		"region":          []byte(e.be.region()),
 		"bucket":          []byte(e.bucket),
@@ -405,6 +510,10 @@ func (e *accessExternal) data(key, secret string) binding.Data {
 		"pathStyle":       []byte(strconv.FormatBool(pathStyle)),
 		"sslrootcert":     e.be.conn.CABundle,
 	}
+	if e.be.gen != nil {
+		d["cloud"] = []byte("aws")
+	}
+	return d
 }
 
 var _ lifecycle.Rotator[s3v1alpha1.BucketAccessSpec, AccessState] = (*accessExternal)(nil)
