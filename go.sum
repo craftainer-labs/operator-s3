@@ -85,8 +85,8 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 h1:aBangftG7EVZoUb69Os8IaYg++6uMOdKK83QtkkvJik=
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2/go.mod h1:qwXFYgsP6T7XnJtbKlf1HP8AjxZZyzxMmc+Lq5GjlU4=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
-github.com/craftainer-labs/lib-operator-go v0.5.0 h1:9QsPp3eknAmrbuKXNtdQ9SQK5dl+CrHeOzM/Dato6q4=
-github.com/craftainer-labs/lib-operator-go v0.5.0/go.mod h1:MGTvEwqplPiwKB2+u1/IpsJOENaKmLrS324Z+L+OYIE=
+github.com/craftainer-labs/lib-operator-go v0.6.0 h1:o/NYc2SJCGzFNHUEwrtRG6ijshg1qm4MqdDMd1PzWWc=
+github.com/craftainer-labs/lib-operator-go v0.6.0/go.mod h1:MGTvEwqplPiwKB2+u1/IpsJOENaKmLrS324Z+L+OYIE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
