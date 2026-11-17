@@ -48,7 +48,15 @@ type markerEncoder interface {
 	EncodeMarker(marker string) string
 }
 
+// atomicMarker is the optional interface of a Store that writes the marker in
+// the request that creates the bucket: a bucket without a marker is then never
+// the claim's, whatever a create-issued record says.
+type atomicMarker interface {
+	MarkerAtCreate()
+}
+
 var (
+	_ atomicMarker   = (*gcs.Store)(nil)
 	_ paramValidator = (*awss3.Store)(nil)
 	_ paramValidator = (*gcs.Store)(nil)
 	_ markerEncoder  = (*gcs.Store)(nil)
@@ -169,7 +177,8 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	if st.Marker() != "" && st.Marker() != e.marker {
 		return none, e.foreign(fmt.Errorf("%w: bucket %q belongs to another claim", lifecycle.ErrNameCollision, e.name))
 	}
-	if st.Marker() == "" && e.claim.GetExternalID() != createIssued {
+	_, atomic := e.be.store.(atomicMarker)
+	if st.Marker() == "" && (atomic || e.claim.GetExternalID() != createIssued) {
 		return none, e.foreign(fmt.Errorf("%w: %w: %q", lifecycle.ErrNameCollision, ErrExistsUnmanaged, e.name))
 	}
 	// A claim from before the create was recorded: the marker is the proof that

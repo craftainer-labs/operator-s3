@@ -307,9 +307,14 @@ Every request dials through the egress policy and the store's `proxyURL`.
   rules in one request. The label is `craftainer-dev-claim` (GCS label keys
   cannot hold `.` or `/`) and its value is a digest of `namespace/name/uid`, since
   the claim cannot be a label value. A bucket with another or no label is a
-  `NameCollision` and is never adopted, changed or deleted. A bucket another
-  project holds answers `409` on create (a `NameCollision`) and `403` on read,
-  which is reported as an authentication failure, as on AWS.
+  `NameCollision` and is never adopted, changed or deleted: the label is written
+  in the request that creates the bucket, so an unlabelled bucket is never a
+  claim's, whatever the status records. A bucket another project holds answers
+  `409` on create and `403` on read; a `403` is a `NameCollision` when the same
+  credentials can still list the project's buckets, and an authentication failure
+  when they cannot (as is a token the service-account key cannot get). The
+  location is used at create only: a bucket in another location is not moved and
+  is not reported.
 - **Lifecycle rules** have no ID on GCS: they are compared by prefix and days, so
   renaming a rule's `id` changes nothing. A rule of another shape is replaced.
 - **A bucket quota and `objectLock` are refused** (`Synced=False`, reason

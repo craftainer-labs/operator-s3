@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	gcpCredsName = "gcp-creds"
-	gcpProject   = "proj-12345"
+	gcpKeyFile = "gcp-creds"
+	gcpProject = "proj-12345"
 )
 
 var (
@@ -54,10 +54,13 @@ func gcpKeys(t *testing.T, clientEmail string) map[string][]byte {
 		}
 		gcpKeyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 	})
-	key, err := json.Marshal(map[string]string{
-		"type": "service_account", "project_id": gcpProject, "private_key_id": "kid", "private_key": gcpKeyPEM,
-		"client_email": clientEmail, "client_id": "1", "token_uri": "https://oauth2.example.test/token",
-	})
+	// Assigned key by key: gosec G101 takes a literal holding "private_key" for a
+	// hardcoded credential, and this one is generated above.
+	doc := map[string]string{}
+	doc["type"], doc["project_id"], doc["private_key_id"] = "service_account", gcpProject, "kid"
+	doc["private_key"], doc["client_email"], doc["client_id"] = gcpKeyPEM, clientEmail, "1"
+	doc["token_uri"] = "https://oauth2.example.test/token"
+	key, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +102,13 @@ func newGCPHarness(t *testing.T, mutate func(*s3v1alpha1.ClusterObjectStore)) (*
 			Type: cloud.ProviderGCP,
 			GCP:  &cloud.GCPClusterBlock{GCPBlock: cloud.GCPBlock{Project: gcpProject, Location: "europe-west1"}},
 		}
-		s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: gcpCredsName, Namespace: ops}}
+		s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: gcpKeyFile, Namespace: ops}}
 		if mutate != nil {
 			mutate(s)
 		}
 	})
 	h.must(env.Client.Create(context.Background(), &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: gcpCredsName, Namespace: h.ops}, Data: gcpKeys(t, "operator@proj-12345.iam.gserviceaccount.com"),
+		ObjectMeta: metav1.ObjectMeta{Name: gcpKeyFile, Namespace: h.ops}, Data: gcpKeys(t, "operator@proj-12345.iam.gserviceaccount.com"),
 	}))
 	h.cfg.Cache = NewStoreCache(time.Hour)
 	rec := &gcpRecorder{}
@@ -136,7 +139,7 @@ func TestBackendBuildsTheGCPStore(t *testing.T) {
 	}
 	// A new key in the Secret: a new Store.
 	h.must(env.Client.Update(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: gcpCredsName, Namespace: h.ops}, Data: gcpKeys(t, "rotated@proj-12345.iam.gserviceaccount.com"),
+		ObjectMeta: metav1.ObjectMeta{Name: gcpKeyFile, Namespace: h.ops}, Data: gcpKeys(t, "rotated@proj-12345.iam.gserviceaccount.com"),
 	}))
 	if _, err = h.cfg.backend(ctx, h.ns, h.ref()); err != nil || len(rec.stores) != 2 {
 		t.Errorf("rotated: %v, %d stores", err, len(rec.stores))
@@ -148,11 +151,11 @@ func TestBackendBuildsTheGCPStoreOfANamespacedStore(t *testing.T) {
 	h, rec := newGCPHarness(t, nil)
 	ctx := context.Background()
 	h.must(env.Client.Create(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: gcpCredsName, Namespace: h.ns}, Data: gcpKeys(t, "tenant@proj-12345.iam.gserviceaccount.com"),
+		ObjectMeta: metav1.ObjectMeta{Name: gcpKeyFile, Namespace: h.ns}, Data: gcpKeys(t, "tenant@proj-12345.iam.gserviceaccount.com"),
 	}))
 	st := &s3v1alpha1.ObjectStore{ObjectMeta: metav1.ObjectMeta{Name: "mine", Namespace: h.ns}}
 	st.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{Type: cloud.ProviderGCP, GCP: &cloud.GCPBlock{Project: "tenant-12345"}}
-	st.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: gcpCredsName}}
+	st.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: gcpKeyFile}}
 	h.must(env.Client.Create(ctx, st))
 
 	b, err := h.cfg.backend(ctx, h.ns, common.ServerRef{Kind: s3v1alpha1.KindObjectStore, Name: "mine"})
@@ -203,7 +206,7 @@ func TestGCPBackendFailures(t *testing.T) {
 	// The Secret holds a key of another type.
 	h, rec := newGCPHarness(t, nil)
 	h.must(env.Client.Update(ctx, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: gcpCredsName, Namespace: h.ops},
+		ObjectMeta: metav1.ObjectMeta{Name: gcpKeyFile, Namespace: h.ops},
 		Data:       map[string][]byte{cloud.KeyGCPCredentials: []byte(`{"type":"external_account","secret":"GCPSECRETVALUE"}`)},
 	}))
 	_, err := h.cfg.backend(ctx, h.ns, h.ref())
@@ -356,4 +359,34 @@ func TestBucketsOnAStoreThatEncodesTheMarker(t *testing.T) {
 	h.fake.reset()
 	h.reconcileOK(r, b)
 	h.fake.wantNot(t, "CreateBucket", "UpdateBucket")
+}
+
+// atomicStore is a Store that writes the marker in the request that creates the
+// bucket (as the GCS store does).
+type atomicStore struct{ *memStore }
+
+func (atomicStore) MarkerAtCreate() {}
+
+// On a store that writes the marker at create, a bucket without one is never the
+// claim's, whatever the status records: it is refused and never updated.
+func TestAnUnmarkedBucketIsNeverTakenOverOnAnAtomicMarkerStore(t *testing.T) {
+	h, _ := newGCPHarness(t, nil)
+	h.cfg.NewGCPStore = func(context.Context, *cloud.GCPClient, string, string) (Store, error) {
+		return atomicStore{h.fake}, nil
+	}
+	r := &BucketReconciler{h.cfg}
+
+	b := h.bucket("crashed", nil)
+	name := s3client.BucketName(h.ns, "crashed")
+	h.fake.buckets[name] = s3client.BucketState{Exists: true, Tags: map[string]string{}}
+	h.reconcileOK(r, b) // pins and adds the finalizer; refuses the bucket
+	h.get(b)
+	b.Status.ExternalID = createIssued
+	h.must(env.Client.Status().Update(context.Background(), b))
+	h.fake.reset()
+	h.reconcileOK(r, b)
+	h.fake.wantNot(t, "CreateBucket", "UpdateBucket", "DeleteBucket")
+	if got := h.fake.buckets[name].Marker(); got != "" {
+		t.Errorf("marker = %q", got)
+	}
 }

@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
+
+	"golang.org/x/oauth2"
 
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
@@ -126,7 +129,7 @@ func TestCreateWithoutLocation(t *testing.T) {
 	if err := s.CreateBucket(context.Background(), params(s, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if loc, ok := f.bucket("b")["location"]; ok && loc != "" {
+	if loc, ok := f.bucket("b")["location"]; ok && loc != "" && loc != "US" { // the library asks for US when none is set
 		t.Errorf("location = %v", loc)
 	}
 }
@@ -180,11 +183,61 @@ func TestForeignBucket(t *testing.T) {
 	if err := s.CreateBucket(context.Background(), params(s, "b")); !errors.Is(err, s3client.ErrBucketExists) {
 		t.Errorf("create race: %v", err)
 	}
+	// A 403 on the bucket while the credentials can list the project's buckets
+	// is a name held elsewhere: a collision, which a delete can get past.
 	f = newFakeGCS()
 	f.refuse["GET"] = http.StatusForbidden
 	s = newStore(t, f)
+	if _, err := s.Bucket(context.Background(), "b"); !errors.Is(err, s3client.ErrBucketExists) {
+		t.Errorf("403 read with a working list: %v", err)
+	}
+	// A 403 on the list as well is a refused credential.
+	f.refuse["GET list"] = http.StatusForbidden
 	if _, err := s.Bucket(context.Background(), "b"); errors.Is(err, s3client.ErrBucketExists) || !errors.Is(err, s3client.ErrConnAuth) {
 		t.Errorf("403 read: %v", err)
+	}
+}
+
+// A refused token (no HTTP status of the API) is an authentication failure, and
+// a client the library cannot build is a fixed error without the endpoint.
+func TestTokenAndClientErrors(t *testing.T) {
+	refused := &url.Error{Op: "Get", URL: "https://secret.example/token", Err: &oauth2.RetrieveError{
+		Response: &http.Response{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"}, Body: []byte("secret detail"),
+	}}
+	hc := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, refused })}
+	s, err := New(context.Background(), &cloud.GCPClient{HTTPClient: hc, Endpoint: "http://gcs.invalid"}, "proj-12345", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Bucket(context.Background(), "b")
+	if !errors.Is(err, s3client.ErrConnAuth) || strings.Contains(err.Error(), "secret") {
+		t.Errorf("token refusal: %v", err)
+	}
+
+	_, err = New(context.Background(), &cloud.GCPClient{HTTPClient: hc, Endpoint: "http://[::1"}, "proj-12345", "")
+	if !errors.Is(err, ErrClientNotBuilt) || strings.Contains(err.Error(), "::1") {
+		t.Errorf("bad endpoint: %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The store knows GCS rules have no ID, whatever state the caller passes.
+func TestUpdateIgnoresCallerRuleIDs(t *testing.T) {
+	f := newFakeGCS()
+	s := newStore(t, f)
+	p := params(s, "b1")
+	p.Rules = []s3client.Rule{{ID: "x", Prefix: "p/", Days: 3}}
+	if err := s.CreateBucket(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.Bucket(context.Background(), "b1")
+	st.NoRuleIDs = false
+	f.reset()
+	if err := s.UpdateBucket(context.Background(), p, st); err != nil || strings.Contains(f.callList(), "PATCH") {
+		t.Errorf("written: %v\n%s", err, f.callList())
 	}
 }
 
@@ -211,6 +264,9 @@ func TestFailuresAreCategories(t *testing.T) {
 			f := newFakeGCS()
 			f.buckets["b"] = map[string]any{"name": "b"}
 			f.refuse[tc.key] = status
+			if tc.key == "GET" {
+				f.refuse["GET list"] = status // else a 403 on the bucket is a foreign name
+			}
 			err := tc.call(newStore(t, f))
 			var apiErr *s3client.Error
 			if err == nil || !errors.As(err, &apiErr) || apiErr.Status != status || apiErr.Code != "boom" {

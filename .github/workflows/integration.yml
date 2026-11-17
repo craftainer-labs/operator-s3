@@ -246,7 +246,7 @@ jobs:
       - name: Start fake-gcs-server
         run: |
           set -euo pipefail
-          docker run -d --name fake-gcs "$FAKE_GCS_IMAGE" -scheme http -port 4443
+          docker run -d --name fake-gcs "$FAKE_GCS_IMAGE" -backend memory -scheme http -port 4443
           gcs_ip=$(docker inspect -f '{{.NetworkSettings.IPAddress}}' fake-gcs)
           echo "FAKE_GCS_IP=$gcs_ip" >> "$GITHUB_ENV"
           for _ in $(seq 1 60); do

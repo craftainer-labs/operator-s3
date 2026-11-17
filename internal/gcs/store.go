@@ -40,6 +40,7 @@ import (
 	"strings"
 
 	"cloud.google.com/go/storage"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -57,6 +58,9 @@ var (
 	// ErrObjectLockUnsupported means the request asks for object lock, which
 	// has no GCS counterpart. Remove spec.objectLock from the Bucket.
 	ErrObjectLockUnsupported = errors.New("a GCP store has no object lock: remove spec.objectLock")
+	// ErrClientNotBuilt is the answer of New when the library refuses its
+	// configuration (a malformed endpoint, for one).
+	ErrClientNotBuilt = errors.New("cannot build the GCS client from the configured endpoint")
 	// ErrAccessNotImplemented is the answer of ApplyAccess: BucketAccess on GCP
 	// is not implemented until its API is decided.
 	ErrAccessNotImplemented = errors.New("access on a GCP store is not implemented yet: BucketAccess on GCP awaits an API decision")
@@ -86,11 +90,16 @@ func New(ctx context.Context, c *cloud.GCPClient, project, location string) (*St
 	}
 	cl, err := storage.NewClient(ctx, opts...)
 	if err != nil {
-		return nil, err
+		// The library's text can carry the configured endpoint: a fixed one.
+		return nil, ErrClientNotBuilt
 	}
 	cl.SetRetry(storage.WithMaxAttempts(1))
 	return &Store{client: cl, hc: c.HTTPClient, project: project, location: location}, nil
 }
+
+// MarkerAtCreate marks the Store as one that writes a bucket's label in the
+// request that creates it, so an unlabelled bucket is never one of its claims.
+func (*Store) MarkerAtCreate() {}
 
 // CloseIdleConnections closes the idle connections of the Store's HTTP client;
 // the controllers call it when they drop a cached Store.
@@ -128,6 +137,13 @@ func reasonOf(err error) string {
 // unreachable store, as for the other backends.
 func fail(ctx context.Context, op string, err error) error {
 	status := statusOf(err)
+	var tokenRefused *oauth2.RetrieveError
+	if status == 0 && errors.As(err, &tokenRefused) {
+		// The token endpoint refused the service-account key (it has no
+		// googleapi status): a failed authentication, not a network failure.
+		log.FromContext(ctx).V(1).Info("the token endpoint refused the credentials", "request", op)
+		return s3client.AuthFailed(&s3client.Error{Status: http.StatusUnauthorized})
+	}
 	if status == 0 {
 		e := s3client.Unreachable(err)
 		log.FromContext(ctx).V(1).Info("cannot reach the backend", "request", op, "error", e.Error())
@@ -143,11 +159,19 @@ func fail(ctx context.Context, op string, err error) error {
 
 // Bucket reads the bucket name: its existence, labels, versioning and lifecycle
 // rules. The quota is always 0: GCS has none. A bucket the credentials cannot
-// see (another project's) answers 403, an authentication failure.
+// see (another project's) answers 403: when the credentials can still list the
+// project's buckets the 403 means the name is held elsewhere, which is
+// s3client.ErrBucketExists (a name collision, never managed and never blocking
+// a delete); otherwise it is an authentication failure.
 func (s *Store) Bucket(ctx context.Context, name string) (s3client.BucketState, error) {
 	attrs, err := s.client.Bucket(name).Attrs(ctx)
 	if errors.Is(err, storage.ErrBucketNotExist) || statusOf(err) == http.StatusNotFound {
 		return s3client.BucketState{}, nil
+	}
+	if statusOf(err) == http.StatusForbidden {
+		if _, perr := s.ServerVersion(ctx); errors.Is(perr, s3client.ErrNoVersion) {
+			return s3client.BucketState{}, s3client.ErrBucketExists
+		}
 	}
 	if err != nil {
 		return s3client.BucketState{}, fail(ctx, "GET bucket", err)
@@ -247,6 +271,8 @@ func (s *Store) UpdateBucket(ctx context.Context, p s3client.BucketParams, cur s
 		u.VersioningEnabled = p.Versioning
 		changed = true
 	}
+	// GCS rules have no ID, whatever the caller's copy of the state says.
+	cur.NoRuleIDs = true
 	if !s3client.RulesMatch(cur, p.Rules) {
 		l := lifecycleOf(p.Rules)
 		u.Lifecycle = &l

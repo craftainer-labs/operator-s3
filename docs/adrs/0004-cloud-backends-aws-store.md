@@ -112,7 +112,7 @@ from S3 and from RustFS in ways that matter here:
 - There is no bucket quota, and no per-bucket object lock (retention is a
   different feature with other semantics).
 - A bucket name another project holds answers `409` on create and `403` on
-  read, like a refused credential.
+  read, like a refused credential (told apart by a list, see below).
 - fake-gcs-server keeps a bucket's name and versioning only.
 
 ### Decision
@@ -128,8 +128,10 @@ from S3 and from RustFS in ways that matter here:
   `namespace/name/uid` (the first 20 bytes of its SHA-256, in hex), because the
   claim cannot be a label value; the controller asks the store for that form
   (`EncodeMarker`) before it compares. A bucket with another or no marker is a
-  `NameCollision`, as on AWS, and is never adopted, changed or deleted, except
-  a bucket whose claim recorded the create.
+  `NameCollision`, as on AWS, and is never adopted, changed or deleted. Unlike
+  AWS, a bucket with no marker is not taken over even when the claim recorded the
+  create: GCS writes the label in the create request, so an unlabelled bucket is
+  never the claim's.
 - **Rules are compared by prefix and days.** A GCS rule has no ID, so a store
   reports `NoRuleIDs` and the controller ignores the IDs of the claim's rules
   when it compares. A rule of any other shape (another action, several
@@ -145,7 +147,10 @@ from S3 and from RustFS in ways that matter here:
   on delete is a bucket that is not empty (never emptied by the operator), and
   `401` and `403` are an authentication failure of an unreachable store,
   because GCS gives `403` both to refused credentials and to a bucket of
-  another project.
+  another project. A `403` on a bucket read is told apart by listing the
+  project's buckets: when that works the name is held elsewhere (`NameCollision`,
+  so a delete of the claim is not blocked). A token the service-account key
+  cannot get has no API status and is also an authentication failure.
 - **`BucketAccess` is not implemented.** `ApplyAccess` answers a fixed "not
   implemented" error; finding and deleting access finds nothing, so a claim that
   never got an account can be deleted.
@@ -189,5 +194,5 @@ identifiers, the service account marker) goes back to G-api.
   [NFR-0006](../nfrs/NFR-0006-gcp-behaviour-not-verified-by-fake-gcs-server.md).
 - The label and the lifecycle rules are checked against an httptest fake of
   the JSON API, not against GCS, until a real project is used.
-- A bucket in a project the credentials cannot see is reported as an
-  authentication failure, not a collision, as on AWS.
+- The location is applied at create only; a bucket in another location is
+  neither moved nor reported.
