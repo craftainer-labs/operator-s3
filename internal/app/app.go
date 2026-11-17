@@ -300,7 +300,7 @@ type setupStep struct {
 }
 
 // The manager's access to the group's kinds, and to what the controllers touch
-// outside it. Namespaces: allowedNamespaces selectors (server.Resolve).
+// outside it. Namespaces: allowedNamespaces selectors (server.ResolveCloud).
 // Secrets: the stores' admin credentials and CA bundles are read (an
 // ObjectStore's live in its own namespace, so this is a ClusterRole rule, not
 // only a Role in the operator namespace) and the binding Secrets are written;
@@ -350,9 +350,9 @@ func setup(mgr ctrl.Manager, webhooks bool, cs controllerSettings) error {
 		setupStep{"Bucket controller", (&controller.BucketReconciler{Config: cfg}).SetupWithManager},
 		setupStep{"BucketAccess controller", (&controller.AccessReconciler{Config: cfg}).SetupWithManager},
 		setupStep{"ClusterObjectStore probe", storeProbe(mgr, cfg, cs.namespace,
-			func() probe.Server { return &s3v1alpha1.ClusterObjectStore{} })},
+			func() probe.CloudServer { return &s3v1alpha1.ClusterObjectStore{} })},
 		setupStep{"ObjectStore probe", storeProbe(mgr, cfg, cs.namespace,
-			func() probe.Server { return &s3v1alpha1.ObjectStore{} })})
+			func() probe.CloudServer { return &s3v1alpha1.ObjectStore{} })})
 	// +kubebuilder:scaffold:builder
 	return runSteps(mgr, steps)
 }
@@ -372,9 +372,9 @@ func cacheByObject() map[client.Object]cache.ByObject {
 // ServerReachable) from a RustFS admin probe. Its Client reads Secrets and
 // ConfigMaps live (managerOptions), and its watches on them go through the
 // manager's caches, which hold only the managed-by labelled ones.
-func storeProbe(mgr ctrl.Manager, cfg controller.Config, operatorNS string, kind func() probe.Server) func(ctrl.Manager) error {
+func storeProbe(mgr ctrl.Manager, cfg controller.Config, operatorNS string, kind func() probe.CloudServer) func(ctrl.Manager) error {
 	return (&probe.Reconciler{
-		Client: mgr.GetClient(), New: kind, Prober: controller.Prober{Config: cfg},
+		Client: mgr.GetClient(), NewCloud: kind, CloudProber: controller.Prober{Config: cfg},
 		Options: probe.Options{OperatorNamespace: operatorNS},
 	}).SetupWithManager
 }

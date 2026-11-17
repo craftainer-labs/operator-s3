@@ -22,7 +22,7 @@ func objectStore(endpoint, proxy string) *s3v1alpha1.ObjectStore {
 	return &s3v1alpha1.ObjectStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "store", Namespace: "default"},
 		Spec: s3v1alpha1.ObjectStoreSpec{
-			ServerCommon:      common.ServerCommon{ProxyURL: proxy},
+			CloudServerCommon: common.CloudServerCommon{ProxyURL: proxy},
 			ObjectStoreConfig: storeConfig(endpoint),
 		},
 	}
@@ -32,7 +32,7 @@ func clusterObjectStore(endpoint, proxy string) *s3v1alpha1.ClusterObjectStore {
 	return &s3v1alpha1.ClusterObjectStore{
 		ObjectMeta: metav1.ObjectMeta{Name: "store"},
 		Spec: s3v1alpha1.ClusterObjectStoreSpec{
-			ServerCommon:      common.ServerCommon{ProxyURL: proxy},
+			CloudServerCommon: common.CloudServerCommon{ProxyURL: proxy},
 			ObjectStoreConfig: storeConfig(endpoint),
 		},
 	}
@@ -68,6 +68,7 @@ var storeCases = []struct {
 }{
 	{name: "valid", endpoint: "https://rustfs.storage.svc:9000"},
 	{name: "valid with a proxy", endpoint: "https://rustfs:9000", proxy: "socks5://proxy:1080"},
+	{name: "no endpoint (a store with a provider; the schema requires it otherwise)", endpoint: ""},
 	{name: "http endpoint", endpoint: "http://rustfs:9000", field: "spec.endpoint"},
 	{name: "endpoint without a host", endpoint: "https://", field: "spec.endpoint"},
 	{name: "malformed endpoint", endpoint: "https://[::1", field: "spec.endpoint"},

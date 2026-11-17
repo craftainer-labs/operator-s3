@@ -5,14 +5,46 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 )
 
-// +kubebuilder:validation:XValidation:rule="has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != ''",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
+// ClusterStoreProvider is the cloud a cluster store runs in. Only AWS is
+// supported by this operator so far.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'AWS'",message="only AWS is supported as provider.type"
+// +kubebuilder:validation:XValidation:rule="has(self.aws)",message="provider.aws is required"
+type ClusterStoreProvider struct {
+	// type selects the cloud; it cannot change. The schema lists every cloud
+	// of lib-operator-go, and the rules above admit only AWS: the other clouds
+	// come with their own NKs3 items.
+	Type cloud.ProviderType `json:"type"`
+
+	// aws is the AWS block, set exactly when type is AWS.
+	// +optional
+	AWS *cloud.AWSClusterBlock `json:"aws,omitempty"`
+}
 
 // ClusterObjectStoreSpec defines the desired state of ClusterObjectStore.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.provider) || has(self.endpoint)",message="endpoint is required without a provider"
+// +kubebuilder:validation:XValidation:rule="has(self.provider) || has(self.adminCredentialsSecretRef)",message="adminCredentialsSecretRef is required without a provider"
+// +kubebuilder:validation:XValidation:rule="!has(self.provider) || !has(self.adminCredentialsSecretRef)",message="adminCredentialsSecretRef is forbidden with a provider: the cloud credential is credentials"
+// +kubebuilder:validation:XValidation:rule="!has(self.provider) || (!has(self.region) && !has(self.pathStyle) && !has(self.backend))",message="region, pathStyle and backend are forbidden with a provider"
+// +kubebuilder:validation:XValidation:rule="!has(self.credentials) || has(self.provider)",message="credentials is allowed only with a provider"
+// +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace != ”)",message="adminCredentialsSecretRef.namespace is required on a cluster-scoped store"
 type ClusterObjectStoreSpec struct {
-	common.ServerCommon `json:",inline"`
-	ObjectStoreConfig   `json:",inline"`
+	common.CloudServerCommon `json:",inline"`
+	ObjectStoreConfig        `json:",inline"`
+
+	// provider runs the store on a cloud (S3 buckets of an AWS account).
+	// Absent means a self-hosted RustFS.
+	// +optional
+	Provider *ClusterStoreProvider `json:"provider,omitempty"`
+
+	// credentials is the cloud credential: the operator's own identity
+	// (WorkloadIdentity, the default) or a Secret in the operator's namespace.
+	// +optional
+	Credentials *cloud.Credentials `json:"credentials,omitempty"`
 
 	// allowedNamespaces says which namespaces may claim from this store. It is
 	// required, so a store without it is rejected: it fails closed.
@@ -53,14 +85,30 @@ type ClusterObjectStoreList struct {
 	Items           []ClusterObjectStore `json:"items"`
 }
 
-// GetCommon returns the settings every server kind shares.
-func (s *ClusterObjectStore) GetCommon() *common.ServerCommon { return &s.Spec.ServerCommon }
+// GetCloudCommon returns the settings every cloud-capable server shares.
+func (s *ClusterObjectStore) GetCloudCommon() *common.CloudServerCommon {
+	return &s.Spec.CloudServerCommon
+}
 
-// GetServerStatus returns the status the probe writes (probe.Server).
+// GetServerStatus returns the status the probe writes (probe.CloudServer).
 func (s *ClusterObjectStore) GetServerStatus() *common.ServerStatus { return &s.Status }
 
-// GetEndpoint returns spec.endpoint.
+// GetEndpoint returns spec.endpoint, empty for a store whose address is
+// discovered.
 func (s *ClusterObjectStore) GetEndpoint() string { return s.Spec.Endpoint }
+
+// GetCredentialsSecret returns the name and namespace of
+// spec.credentials.secretRef, and an empty name for workload identity.
+func (s *ClusterObjectStore) GetCredentialsSecret() (name, namespace string) {
+	c := s.Spec.Credentials
+	if c == nil || c.Source != cloud.SourceSecret || c.SecretRef == nil {
+		return "", ""
+	}
+	return c.SecretRef.Name, c.SecretRef.Namespace
+}
+
+// HasProvider reports whether the store runs on a cloud.
+func (s *ClusterObjectStore) HasProvider() bool { return s.Spec.Provider != nil }
 
 // GetAllowedNamespaces returns spec.allowedNamespaces.
 func (s *ClusterObjectStore) GetAllowedNamespaces() *common.AllowedNamespaces {

@@ -14,7 +14,7 @@ import (
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
 
-// Prober is the probe.Prober of both store kinds: it builds a client through
+// Prober is the probe.CloudProber of both store kinds: it builds a client through
 // the egress policy and the store's proxy and TLS settings (the same target
 // the claims' reconcilers use) and reads the server version from the admin
 // API, an authenticated call that proves the store is reachable and accepts
@@ -23,7 +23,7 @@ import (
 // category of failure, never a key or a host.
 type Prober struct{ Config Config }
 
-var _ probe.Prober = Prober{}
+var _ probe.CloudProber = Prober{}
 
 // Probe returns the server version of srv. A store that answers the
 // authenticated call but names no version is healthy with an empty version
@@ -31,10 +31,18 @@ var _ probe.Prober = Prober{}
 // what the status promises). The client is built for the probe and its
 // connections are closed with it, not taken from the claims' store cache, so a
 // probe of a store nobody claims leaves nothing behind.
-func (p Prober) Probe(ctx context.Context, srv server.Server, conn server.Connection) (string, error) {
-	spec, err := storeConfigOf(srv)
+func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, cc server.CloudConnection) (probe.CloudResult, error) {
+	version, err := p.probe(ctx, srv, cc.Connection)
+	return probe.CloudResult{Version: version}, err
+}
+
+func (p Prober) probe(ctx context.Context, srv server.CloudServer, conn server.Connection) (string, error) {
+	spec, provider, err := storeConfigOf(srv)
 	if err != nil {
 		return "", err
+	}
+	if provider {
+		return "", fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
 	}
 	dial, err := p.Config.Egress.HostDialer(conn.Proxy)
 	if err != nil {
@@ -62,13 +70,14 @@ func (p Prober) Probe(ctx context.Context, srv server.Server, conn server.Connec
 	return version, err
 }
 
-// storeConfigOf returns the S3 fields of a store kind of this operator.
-func storeConfigOf(srv server.Server) (s3v1alpha1.ObjectStoreConfig, error) {
+// storeConfigOf returns the S3 fields of a store kind of this operator, and
+// whether the store runs on a cloud.
+func storeConfigOf(srv server.CloudServer) (s3v1alpha1.ObjectStoreConfig, bool, error) {
 	switch s := srv.(type) {
 	case *s3v1alpha1.ClusterObjectStore:
-		return s.Spec.ObjectStoreConfig, nil
+		return s.Spec.ObjectStoreConfig, s.HasProvider(), nil
 	case *s3v1alpha1.ObjectStore:
-		return s.Spec.ObjectStoreConfig, nil
+		return s.Spec.ObjectStoreConfig, s.HasProvider(), nil
 	}
-	return s3v1alpha1.ObjectStoreConfig{}, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
+	return s3v1alpha1.ObjectStoreConfig{}, false, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
 }

@@ -40,6 +40,12 @@ func probeFixture(vs *versionStore) (Prober, *[]s3client.Target) {
 	return Prober{Config: cfg}, &targets
 }
 
+// probeVersion runs the probe against a connection with no cloud credentials.
+func probeVersion(ctx context.Context, p Prober, srv server.CloudServer, conn server.Connection) (string, error) {
+	r, err := p.ProbeCloud(ctx, srv, server.CloudConnection{Connection: conn})
+	return r.Version, err
+}
+
 func probeConn() server.Connection {
 	return server.Connection{
 		Endpoint: "https://rustfs.example.test:9000",
@@ -56,12 +62,12 @@ func TestProberReadsTheVersionOfBothKinds(t *testing.T) {
 	namespaced := &s3v1alpha1.ObjectStore{}
 
 	for name, tc := range map[string]struct {
-		srv    server.Server
+		srv    server.CloudServer
 		region string
 	}{"cluster": {cluster, "eu-west-1"}, "namespaced": {namespaced, "us-east-1"}} {
 		vs := &versionStore{version: "1.0.0-rc.5"}
 		p, targets := probeFixture(vs)
-		got, err := p.Probe(context.Background(), tc.srv, probeConn())
+		got, err := probeVersion(context.Background(), p, tc.srv, probeConn())
 		if err != nil || got != "1.0.0-rc.5" {
 			t.Fatalf("%s: %q, %v", name, got, err)
 		}
@@ -83,7 +89,7 @@ func TestProberReadsTheVersionOfBothKinds(t *testing.T) {
 // A store that answers but names no version is healthy with an empty one.
 func TestProberToleratesAStoreWithoutAVersion(t *testing.T) {
 	p, _ := probeFixture(&versionStore{err: s3client.ErrNoVersion})
-	got, err := p.Probe(context.Background(), &s3v1alpha1.ObjectStore{}, probeConn())
+	got, err := probeVersion(context.Background(), p, &s3v1alpha1.ObjectStore{}, probeConn())
 	if err != nil || got != "" {
 		t.Errorf("%q, %v", got, err)
 	}
@@ -97,7 +103,7 @@ func TestProberFailuresLeakNothing(t *testing.T) {
 	// A store that refuses the credentials.
 	auth := errors.Join(lifecycle.ErrUnreachable, s3client.ErrConnAuth)
 	p, _ := probeFixture(&versionStore{err: auth})
-	_, err := p.Probe(ctx, srv, probeConn())
+	_, err := probeVersion(ctx, p, srv, probeConn())
 	if !errors.Is(err, s3client.ErrConnAuth) || strings.Contains(err.Error(), "s3cret-sk") || strings.Contains(err.Error(), "admin-ak") {
 		t.Errorf("auth: %v", err)
 	}
@@ -106,14 +112,14 @@ func TestProberFailuresLeakNothing(t *testing.T) {
 	conn := probeConn()
 	delete(conn.Admin, AdminSecretKey)
 	p, targets := probeFixture(&versionStore{})
-	if _, err = p.Probe(ctx, srv, conn); !errors.Is(err, ErrAdminCredentials) || !errors.Is(err, server.ErrInvalidServer) || len(*targets) != 0 {
+	if _, err = probeVersion(ctx, p, srv, conn); !errors.Is(err, ErrAdminCredentials) || !errors.Is(err, server.ErrInvalidServer) || len(*targets) != 0 {
 		t.Errorf("credentials: %v", err)
 	}
 
 	// A proxy the egress policy cannot dial through.
 	conn = probeConn()
 	conn.Proxy = &url.URL{Scheme: "ftp", Host: "proxy.example.test"}
-	if _, err = p.Probe(ctx, srv, conn); !errors.Is(err, server.ErrInvalidServer) {
+	if _, err = probeVersion(ctx, p, srv, conn); !errors.Is(err, server.ErrInvalidServer) {
 		t.Errorf("proxy: %v", err)
 	}
 
@@ -122,7 +128,7 @@ func TestProberFailuresLeakNothing(t *testing.T) {
 		Egress:   egress.NewPolicy(egress.ModeStrict),
 		NewStore: func(s3client.Target) (Store, error) { return nil, s3client.ErrInvalidEndpoint },
 	}}
-	if _, err = bad.Probe(ctx, srv, probeConn()); !errors.Is(err, server.ErrInvalidServer) || !errors.Is(err, s3client.ErrInvalidEndpoint) {
+	if _, err = probeVersion(ctx, bad, srv, probeConn()); !errors.Is(err, server.ErrInvalidServer) || !errors.Is(err, s3client.ErrInvalidEndpoint) {
 		t.Errorf("client: %v", err)
 	}
 
@@ -131,12 +137,12 @@ func TestProberFailuresLeakNothing(t *testing.T) {
 		Egress:   egress.NewPolicy(egress.ModeStrict),
 		NewStore: func(s3client.Target) (Store, error) { return &plainStore{}, nil },
 	}}
-	if got, err := plain.Probe(ctx, srv, probeConn()); err != nil || got != "v" {
+	if got, err := probeVersion(ctx, plain, srv, probeConn()); err != nil || got != "v" {
 		t.Errorf("plain: %q, %v", got, err)
 	}
 
 	// A store kind of another operator.
-	if _, err = p.Probe(ctx, otherServer{}, probeConn()); !errors.Is(err, server.ErrUnknownServerKind) {
+	if _, err = probeVersion(ctx, p, otherServer{}, probeConn()); !errors.Is(err, server.ErrUnknownServerKind) {
 		t.Errorf("kind: %v", err)
 	}
 }
@@ -146,5 +152,23 @@ type plainStore struct{ Store }
 
 func (plainStore) ServerVersion(context.Context) (string, error) { return "v", nil }
 
-// otherServer is a server.Server this operator does not own.
-type otherServer struct{ server.Server }
+// otherServer is a server.CloudServer this operator does not own.
+type otherServer struct{ server.CloudServer }
+
+// A store that names a provider is refused until the cloud backend lands,
+// before any client is built.
+func TestProberRefusesACloudStore(t *testing.T) {
+	p, targets := probeFixture(&versionStore{})
+	for name, srv := range map[string]server.CloudServer{
+		"cluster":    &s3v1alpha1.ClusterObjectStore{Spec: s3v1alpha1.ClusterObjectStoreSpec{Provider: &s3v1alpha1.ClusterStoreProvider{}}},
+		"namespaced": &s3v1alpha1.ObjectStore{Spec: s3v1alpha1.ObjectStoreSpec{Provider: &s3v1alpha1.NamespacedStoreProvider{}}},
+	} {
+		_, err := probeVersion(context.Background(), p, srv, probeConn())
+		if !errors.Is(err, ErrCloudStore) || !errors.Is(err, server.ErrInvalidServer) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if len(*targets) != 0 {
+		t.Errorf("%d clients built", len(*targets))
+	}
+}

@@ -403,12 +403,12 @@ func TestStoreProbesWriteTheStatusOfBothKinds(t *testing.T) {
 	g.Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
 	cluster := &s3v1alpha1.ClusterObjectStore{ObjectMeta: metav1.ObjectMeta{Name: "probe-cluster"}}
 	cluster.Spec.Endpoint = "https://127.0.0.1:9000"
-	cluster.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "s3-admin", Namespace: opsNS}
+	cluster.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "s3-admin", Namespace: opsNS}
 	cluster.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	g.Expect(c.Create(ctx, cluster)).To(Succeed())
 	namespaced := &s3v1alpha1.ObjectStore{ObjectMeta: metav1.ObjectMeta{Name: "probe-team", Namespace: "team"}}
 	namespaced.Spec.Endpoint = "https://127.0.0.1:9000"
-	namespaced.Spec.AdminCredentialsSecretRef = common.AdminSecretRef{Name: "missing"}
+	namespaced.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "missing"}
 	g.Expect(c.Create(ctx, namespaced)).To(Succeed())
 	t.Cleanup(func() { _ = c.Delete(ctx, cluster); _ = c.Delete(ctx, namespaced) })
 

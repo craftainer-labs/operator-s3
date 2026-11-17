@@ -57,7 +57,9 @@ spec:
             description: spec defines the desired state of ClusterObjectStore
             properties:
               adminCredentialsSecretRef:
-                description: AdminCredentialsSecretRef names the admin credentials.
+                description: |-
+                  AdminCredentialsSecretRef names the data-plane admin credentials. Unset
+                  on a server that logs in with its cloud identity.
                 properties:
                   key:
                     description: Key limits the credentials to one key of the Secret.
@@ -146,14 +148,56 @@ spec:
                     ? size(self.selector.matchLabels) : 0) + (has(self.selector.matchExpressions)
                     ? size(self.selector.matchExpressions) : 0) > 0'
               backend:
-                default: RustFS
-                description: backend is the object store implementation.
+                description: |-
+                  backend is the object store implementation (default RustFS). Self-hosted
+                  stores only.
                 enum:
                 - RustFS
                 type: string
+              credentials:
+                description: |-
+                  credentials is the cloud credential: the operator's own identity
+                  (WorkloadIdentity, the default) or a Secret in the operator's namespace.
+                properties:
+                  secretRef:
+                    description: SecretRef is required if and only if Source is Secret.
+                    properties:
+                      name:
+                        description: Name is the Secret's name.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace is the Secret's namespace: required on a cluster server (the
+                          controller accepts only the operator's own namespace), forbidden on a
+                          namespaced one.
+                        maxLength: 63
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  source:
+                    default: WorkloadIdentity
+                    description: Source is WorkloadIdentity (default) or Secret.
+                    enum:
+                    - WorkloadIdentity
+                    - Secret
+                    type: string
+                required:
+                - source
+                type: object
+                x-kubernetes-validations:
+                - message: secretRef is required when source is Secret and forbidden
+                    otherwise
+                  rule: 'self.source == ''Secret'' ? has(self.secretRef) : !has(self.secretRef)'
+                - message: secretRef.namespace is required on a cluster server
+                  rule: self.source != 'Secret' || !has(self.secretRef) || has(self.secretRef.namespace)
               endpoint:
-                description: endpoint is the https URL of the store; the admin API
-                  is under it.
+                description: |-
+                  endpoint is the https URL of the store; the admin API is under it.
+                  Required without a provider; with one it is an optional override of the
+                  discovered address.
                 maxLength: 512
                 type: string
                 x-kubernetes-validations:
@@ -169,11 +213,66 @@ spec:
                 - message: healthCheckInterval must be between 10s and 1h
                   rule: duration(self) >= duration('10s') && duration(self) <= duration('1h')
               pathStyle:
-                default: true
                 description: |-
                   pathStyle selects path-style addressing (https://host/bucket) over
-                  virtual-hosted style. It is a pointer so that false survives omitempty.
+                  virtual-hosted style (default true). It is a pointer so that false
+                  survives omitempty. Self-hosted stores only.
                 type: boolean
+              provider:
+                description: |-
+                  provider runs the store on a cloud (S3 buckets of an AWS account).
+                  Absent means a self-hosted RustFS.
+                properties:
+                  aws:
+                    description: aws is the AWS block, set exactly when type is AWS.
+                    properties:
+                      endpointOverride:
+                        description: |-
+                          EndpointOverride points the SDK at an emulator. It is honoured only when
+                          the operator runs with EGRESS_MODE=allow-private; otherwise the server is
+                          Ready=False with reason EndpointOverrideForbidden. For tests, never for
+                          production.
+                        maxLength: 2048
+                        pattern: ^https?://[^\s]+$
+                        type: string
+                      region:
+                        description: Region is the AWS region; the partition follows
+                          from it.
+                        maxLength: 32
+                        pattern: ^[a-z]{2}(-[a-z]+)+-[0-9]+$
+                        type: string
+                      roleARN:
+                        description: RoleARN, when set, is assumed with the source
+                          credentials.
+                        maxLength: 2048
+                        type: string
+                        x-kubernetes-validations:
+                        - message: 'roleARN must start with arn:'
+                          rule: self.startsWith('arn:')
+                    required:
+                    - region
+                    type: object
+                  type:
+                    description: |-
+                      type selects the cloud; it cannot change. The schema lists every cloud
+                      of lib-operator-go, and the rules above admit only AWS: the other clouds
+                      come with their own NKs3 items.
+                    enum:
+                    - AWS
+                    - GCP
+                    - Azure
+                    type: string
+                    x-kubernetes-validations:
+                    - message: provider.type is immutable
+                      rule: self == oldSelf
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: only AWS is supported as provider.type
+                  rule: self.type == 'AWS'
+                - message: provider.aws is required
+                  rule: has(self.aws)
               proxyURL:
                 description: |-
                   ProxyURL is an http, https or socks5 proxy; unset uses the process
@@ -181,8 +280,9 @@ spec:
                 maxLength: 512
                 type: string
               region:
-                default: us-east-1
-                description: region is the S3 region the store reports.
+                description: |-
+                  region is the S3 region the store reports (default us-east-1). Self-hosted
+                  stores only: a provider names its region in provider.aws.region.
                 maxLength: 64
                 type: string
               tls:
@@ -244,15 +344,25 @@ spec:
                     type: string
                 type: object
             required:
-            - adminCredentialsSecretRef
             - allowedNamespaces
-            - endpoint
             type: object
             x-kubernetes-validations:
+            - message: endpoint is required without a provider
+              rule: has(self.provider) || has(self.endpoint)
+            - message: adminCredentialsSecretRef is required without a provider
+              rule: has(self.provider) || has(self.adminCredentialsSecretRef)
+            - message: 'adminCredentialsSecretRef is forbidden with a provider: the
+                cloud credential is credentials'
+              rule: '!has(self.provider) || !has(self.adminCredentialsSecretRef)'
+            - message: region, pathStyle and backend are forbidden with a provider
+              rule: '!has(self.provider) || (!has(self.region) && !has(self.pathStyle)
+                && !has(self.backend))'
+            - message: credentials is allowed only with a provider
+              rule: '!has(self.credentials) || has(self.provider)'
             - message: adminCredentialsSecretRef.namespace is required on a cluster-scoped
                 store
-              rule: has(self.adminCredentialsSecretRef.namespace) && self.adminCredentialsSecretRef.namespace
-                != ''
+              rule: '!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace)
+                && self.adminCredentialsSecretRef.namespace != '''')'
           status:
             description: status defines the observed state of ClusterObjectStore
             properties:
@@ -317,6 +427,20 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              discovered:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Discovered is what the operator read from the cloud for a cloud server:
+                  endpoint, port, resourceId, accountId and region (ADR 0002, section
+                  16.1). The probe (a cloud Prober of package probe) or the operator's
+                  controller fills it; claims read it from the cached server. A
+                  self-hosted server leaves it empty.
+                maxProperties: 10
+                type: object
+                x-kubernetes-validations:
+                - message: values are at most 512 characters
+                  rule: self.all(k, size(self[k]) <= 512)
               lastProbeTime:
                 description: LastProbeTime is when the server was last probed.
                 format: date-time

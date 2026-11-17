@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 	"github.com/craftainer-labs/lib-operator-go/pkg/probe"
 	"github.com/craftainer-labs/lib-operator-go/pkg/server"
@@ -17,12 +18,12 @@ import (
 // The claim kinds and server kinds must satisfy the interfaces the
 // lib-operator-go reconciler is written against.
 var (
-	_ lifecycle.Claim = (*Bucket)(nil)
-	_ lifecycle.Claim = (*BucketAccess)(nil)
-	_ server.Server   = (*ObjectStore)(nil)
-	_ server.Server   = (*ClusterObjectStore)(nil)
-	_ probe.Server    = (*ObjectStore)(nil)
-	_ probe.Server    = (*ClusterObjectStore)(nil)
+	_ lifecycle.Claim    = (*Bucket)(nil)
+	_ lifecycle.Claim    = (*BucketAccess)(nil)
+	_ server.CloudServer = (*ObjectStore)(nil)
+	_ server.CloudServer = (*ClusterObjectStore)(nil)
+	_ probe.CloudServer  = (*ObjectStore)(nil)
+	_ probe.CloudServer  = (*ClusterObjectStore)(nil)
 )
 
 func TestAddToSchemeRegistersEveryKind(t *testing.T) {
@@ -41,10 +42,10 @@ func TestAddToSchemeRegistersEveryKind(t *testing.T) {
 func TestObjectStoreAccessors(t *testing.T) {
 	g := NewWithT(t)
 	store := &ObjectStore{Spec: ObjectStoreSpec{
-		ServerCommon:      common.ServerCommon{ProxyURL: "http://proxy:3128"},
+		CloudServerCommon: common.CloudServerCommon{ProxyURL: "http://proxy:3128"},
 		ObjectStoreConfig: ObjectStoreConfig{Endpoint: "https://rustfs:9000"},
 	}}
-	g.Expect(store.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
+	g.Expect(store.GetCloudCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(store.GetEndpoint()).To(Equal("https://rustfs:9000"))
 	g.Expect(store.GetAllowedNamespaces()).To(BeNil())
 
@@ -56,16 +57,64 @@ func TestObjectStoreAccessors(t *testing.T) {
 func TestClusterObjectStoreAccessors(t *testing.T) {
 	g := NewWithT(t)
 	store := &ClusterObjectStore{Spec: ClusterObjectStoreSpec{
-		ServerCommon:      common.ServerCommon{ProxyURL: "http://proxy:3128"},
+		CloudServerCommon: common.CloudServerCommon{ProxyURL: "http://proxy:3128"},
 		ObjectStoreConfig: ObjectStoreConfig{Endpoint: "https://rustfs:9000"},
 		AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
 	}}
-	g.Expect(store.GetCommon().ProxyURL).To(Equal("http://proxy:3128"))
+	g.Expect(store.GetCloudCommon().ProxyURL).To(Equal("http://proxy:3128"))
 	g.Expect(store.GetEndpoint()).To(Equal("https://rustfs:9000"))
 	g.Expect(store.GetAllowedNamespaces().From).To(Equal(common.NamespacesAll))
 
 	store.GetServerStatus().ServerVersion = "1.0.0-rc.4"
 	g.Expect(store.Status.ServerVersion).To(Equal("1.0.0-rc.4"))
+}
+
+func TestStoreConfigControllerDefaults(t *testing.T) {
+	g := NewWithT(t)
+	var c ObjectStoreConfig
+	g.Expect(c.RegionOf()).To(Equal("us-east-1"))
+	g.Expect(c.PathStyleOf()).To(BeTrue())
+	g.Expect(c.BackendOf()).To(Equal(BackendRustFS))
+
+	off := false
+	c = ObjectStoreConfig{Region: "eu-west-1", PathStyle: &off, Backend: BackendRustFS}
+	g.Expect(c.RegionOf()).To(Equal("eu-west-1"))
+	g.Expect(c.PathStyleOf()).To(BeFalse())
+	g.Expect(c.BackendOf()).To(Equal(BackendRustFS))
+}
+
+func TestStoreProviderAndCredentialsAccessors(t *testing.T) {
+	g := NewWithT(t)
+
+	cluster := &ClusterObjectStore{}
+	g.Expect(cluster.HasProvider()).To(BeFalse())
+	name, ns := cluster.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	g.Expect(ns).To(BeEmpty())
+	cluster.Spec.Provider = &ClusterStoreProvider{Type: cloud.ProviderAWS}
+	g.Expect(cluster.HasProvider()).To(BeTrue())
+	// Workload identity names no Secret, whatever else is set.
+	cluster.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceWorkloadIdentity}
+	name, _ = cluster.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	cluster.Spec.Credentials = &cloud.Credentials{
+		Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws", Namespace: "craftainer-system"},
+	}
+	name, ns = cluster.GetCredentialsSecret()
+	g.Expect(name).To(Equal("aws"))
+	g.Expect(ns).To(Equal("craftainer-system"))
+
+	store := &ObjectStore{}
+	g.Expect(store.HasProvider()).To(BeFalse())
+	name, ns = store.GetCredentialsSecret()
+	g.Expect(name).To(BeEmpty())
+	g.Expect(ns).To(BeEmpty())
+	store.Spec.Provider = &NamespacedStoreProvider{Type: cloud.ProviderAWS}
+	g.Expect(store.HasProvider()).To(BeTrue())
+	store.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
+	name, ns = store.GetCredentialsSecret()
+	g.Expect(name).To(Equal("aws"))
+	g.Expect(ns).To(BeEmpty())
 }
 
 func TestBucketAccessors(t *testing.T) {

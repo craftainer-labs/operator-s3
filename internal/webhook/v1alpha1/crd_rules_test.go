@@ -8,9 +8,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
+	"github.com/craftainer-labs/lib-operator-go/pkg/cloud"
 	s3v1alpha1 "github.com/craftainer-labs/operator-s3/api/v1alpha1"
 )
 
@@ -39,8 +41,8 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 		return &s3v1alpha1.ClusterObjectStore{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: s3v1alpha1.ClusterObjectStoreSpec{
-				ServerCommon: common.ServerCommon{
-					AdminCredentialsSecretRef: common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"},
+				CloudServerCommon: common.CloudServerCommon{
+					AdminCredentialsSecretRef: &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"},
 				},
 				ObjectStoreConfig: s3v1alpha1.ObjectStoreConfig{Endpoint: "https://rustfs:9000"},
 				AllowedNamespaces: common.AllowedNamespaces{From: common.NamespacesAll},
@@ -51,10 +53,33 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 		return &s3v1alpha1.ObjectStore{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Spec: s3v1alpha1.ObjectStoreSpec{
-				ServerCommon:      common.ServerCommon{AdminCredentialsSecretRef: common.AdminSecretRef{Name: "admin"}},
+				CloudServerCommon: common.CloudServerCommon{AdminCredentialsSecretRef: &common.AdminSecretRef{Name: "admin"}},
 				ObjectStoreConfig: s3v1alpha1.ObjectStoreConfig{Endpoint: "https://rustfs:9000"},
 			},
 		}
+	}
+	// awsClusterStore is a cluster store of an AWS account: no endpoint, no
+	// admin Secret, the operator's own identity.
+	awsClusterStore := func(name string) *s3v1alpha1.ClusterObjectStore {
+		s := clusterStore(name)
+		s.Spec.Endpoint = ""
+		s.Spec.AdminCredentialsSecretRef = nil
+		s.Spec.Provider = &s3v1alpha1.ClusterStoreProvider{
+			Type: cloud.ProviderAWS,
+			AWS:  &cloud.AWSClusterBlock{AWSBlock: cloud.AWSBlock{Region: "eu-west-1"}},
+		}
+		return s
+	}
+	awsStore := func(name string) *s3v1alpha1.ObjectStore {
+		s := store(name)
+		s.Spec.Endpoint = ""
+		s.Spec.AdminCredentialsSecretRef = nil
+		s.Spec.Provider = &s3v1alpha1.NamespacedStoreProvider{
+			Type: cloud.ProviderAWS,
+			AWS:  &cloud.AWSBlock{Region: "eu-west-1"},
+		}
+		s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
+		return s
 	}
 	bucket := func(name string) *s3v1alpha1.Bucket {
 		return &s3v1alpha1.Bucket{
@@ -75,13 +100,93 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 	}
 
 	Describe("ClusterObjectStore", func() {
-		It("applies the schema defaults", func() {
+		It("leaves region, pathStyle and backend to the controller", func() {
 			Expect(create(clusterStore("defaults"))).To(Succeed())
 			got := &s3v1alpha1.ClusterObjectStore{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "defaults"}, got)).To(Succeed())
-			Expect(got.Spec.Region).To(Equal("us-east-1"))
-			Expect(got.Spec.Backend).To(Equal(s3v1alpha1.BackendRustFS))
-			Expect(got.Spec.PathStyle).To(HaveValue(BeTrue()))
+			Expect(got.Spec.Region).To(BeEmpty())
+			Expect(got.Spec.Backend).To(BeEmpty())
+			Expect(got.Spec.PathStyle).To(BeNil())
+			Expect(got.Spec.RegionOf()).To(Equal("us-east-1"))
+		})
+
+		It("admits a store on AWS with workload identity by default", func() {
+			Expect(create(awsClusterStore("aws"))).To(Succeed())
+			s := awsClusterStore("aws-secret")
+			s.Spec.Credentials = &cloud.Credentials{
+				Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws", Namespace: "craftainer-system"},
+			}
+			Expect(create(s)).To(Succeed())
+		})
+
+		It("rejects an empty credentials source", func() {
+			s := awsClusterStore("aws-empty-source")
+			s.Spec.Credentials = &cloud.Credentials{} // sent as source "", which the enum refuses
+			rejected(create(s), "source")
+		})
+
+		It("checks what a provider needs and forbids", func() {
+			s := clusterStore("no-endpoint")
+			s.Spec.Endpoint = ""
+			rejected(create(s), "endpoint is required without a provider")
+
+			s = clusterStore("no-admin")
+			s.Spec.AdminCredentialsSecretRef = nil
+			rejected(create(s), "adminCredentialsSecretRef is required without a provider")
+
+			s = awsClusterStore("admin-with-provider")
+			s.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(create(s), "adminCredentialsSecretRef is forbidden with a provider")
+
+			s = awsClusterStore("region-with-provider")
+			s.Spec.Region = "eu-west-1"
+			rejected(create(s), "region, pathStyle and backend are forbidden with a provider")
+
+			s = awsClusterStore("backend-with-provider")
+			s.Spec.Backend = s3v1alpha1.BackendRustFS
+			rejected(create(s), "region, pathStyle and backend are forbidden with a provider")
+
+			s = clusterStore("credentials-without-provider")
+			s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(s), "credentials is allowed only with a provider")
+
+			s = awsClusterStore("aws-block-missing")
+			s.Spec.Provider.AWS = nil
+			rejected(create(s), "provider.aws is required")
+		})
+
+		It("checks the credentials of a provider", func() {
+			s := awsClusterStore("secret-without-ref")
+			s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret}
+			rejected(create(s), "secretRef is required when source is Secret")
+
+			s = awsClusterStore("secret-without-namespace")
+			s.Spec.Credentials = &cloud.Credentials{Source: cloud.SourceSecret, SecretRef: &cloud.SecretRef{Name: "aws"}}
+			rejected(create(s), "secretRef.namespace is required on a cluster server")
+
+			s = awsClusterStore("identity-with-ref")
+			s.Spec.Credentials = &cloud.Credentials{
+				Source: cloud.SourceWorkloadIdentity, SecretRef: &cloud.SecretRef{Name: "aws", Namespace: "craftainer-system"},
+			}
+			rejected(create(s), "secretRef is required when source is Secret and forbidden otherwise")
+		})
+
+		It("checks the AWS block and the provider type", func() {
+			s := awsClusterStore("bad-region")
+			s.Spec.Provider.AWS.Region = "mars"
+			rejected(create(s), "region")
+
+			s = awsClusterStore("bad-role")
+			s.Spec.Provider.AWS.RoleARN = "not-an-arn"
+			rejected(create(s), "roleARN must start with arn:")
+
+			s = awsClusterStore("override")
+			s.Spec.Provider.AWS.EndpointOverride = "http://moto:5000"
+			Expect(create(s)).To(Succeed())
+
+			s = awsClusterStore("gcp")
+			s.Spec.Provider.Type = cloud.ProviderGCP
+			rejected(create(s), "only AWS is supported as provider.type")
 		})
 
 		It("keeps an explicit pathStyle false", func() {
@@ -149,6 +254,50 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			s := store("with-ns")
 			s.Spec.AdminCredentialsSecretRef.Namespace = "elsewhere"
 			rejected(create(s), "adminCredentialsSecretRef.namespace must not be set")
+		})
+
+		It("admits a store on AWS with a Secret in its own namespace", func() {
+			Expect(create(awsStore("aws"))).To(Succeed())
+		})
+
+		It("refuses workload identity, a missing credential and a namespace on a namespaced store", func() {
+			s := awsStore("identity")
+			s.Spec.Credentials = &cloud.NamespacedCredentials{Source: cloud.SourceWorkloadIdentity}
+			rejected(create(s), "a namespaced server must use source Secret")
+
+			s = awsStore("no-credentials")
+			s.Spec.Credentials = nil
+			rejected(create(s), "a namespaced store with a provider needs credentials")
+
+			s = awsStore("ref-namespace")
+			s.Spec.Credentials.SecretRef.Namespace = "elsewhere"
+			rejected(create(s), "secretRef.namespace is forbidden on a namespaced server")
+
+			s = awsStore("no-admin")
+			s.Spec.AdminCredentialsSecretRef = nil
+			s.Spec.Provider = nil
+			s.Spec.Credentials = nil
+			rejected(create(s), "adminCredentialsSecretRef is required without a provider")
+		})
+
+		It("has no endpoint override on a namespaced store", func() {
+			// The namespaced block has no endpointOverride field: the API server
+			// prunes it, so it can never reach the controller.
+			raw := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": s3v1alpha1.GroupVersion.String(), "kind": "ObjectStore",
+				"metadata": map[string]any{"name": "override", "namespace": ns},
+				"spec": map[string]any{
+					"provider":    map[string]any{"type": "AWS", "aws": map[string]any{"region": "eu-west-1", "endpointOverride": "http://moto:5000"}},
+					"credentials": map[string]any{"source": "Secret", "secretRef": map[string]any{"name": "aws"}},
+				},
+			}}
+			Expect(create(raw)).To(Succeed())
+			pruned := &unstructured.Unstructured{}
+			pruned.SetGroupVersionKind(s3v1alpha1.GroupVersion.WithKind("ObjectStore"))
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "override"}, pruned)).To(Succeed())
+			aws, _, _ := unstructured.NestedMap(pruned.Object, "spec", "provider", "aws")
+			Expect(aws).To(HaveKeyWithValue("region", "eu-west-1"))
+			Expect(aws).NotTo(HaveKey("endpointOverride"))
 		})
 
 		It("rejects an endpoint without a host in the webhook", func() {

@@ -14,12 +14,13 @@ import (
 var objectstorelog = logf.Log.WithName("objectstore-resource")
 
 // validateStore checks the two URLs of a store, for both store kinds. The
-// schema already requires the endpoint to start with https://; the parse here
-// also rejects a missing host and malformed URLs.
+// schema already requires the endpoint to start with https:// and to be set
+// unless the store has a provider (which discovers it); the parse here also
+// rejects a missing host and malformed URLs.
 func validateStore(spec *s3v1alpha1.ObjectStoreConfig, proxyURL string) field.ErrorList {
 	var errs field.ErrorList
 	path := field.NewPath("spec")
-	if !validURL(spec.Endpoint, "https") {
+	if spec.Endpoint != "" && !validURL(spec.Endpoint, "https") {
 		errs = append(errs, field.Invalid(path.Child("endpoint"), redacted, "must be an https URL with a host and without user:password@"))
 	}
 	if proxyURL != "" && !validURL(proxyURL, "http", "https", "socks5") {
