@@ -201,7 +201,10 @@ func (s *Store) Bucket(ctx context.Context, name string) (s3client.BucketState, 
 	if err != nil {
 		return s3client.BucketState{}, fail(ctx, "GET bucket", err)
 	}
-	st := s3client.BucketState{Exists: true, Tags: map[string]string{}, Versioning: attrs.VersioningEnabled, NoRuleIDs: true}
+	st := s3client.BucketState{
+		Exists: true, Tags: map[string]string{}, Versioning: attrs.VersioningEnabled, NoRuleIDs: true,
+		Drifted: !attrs.UniformBucketLevelAccess.Enabled || attrs.PublicAccessPrevention != storage.PublicAccessPreventionEnforced,
+	}
 	for k, v := range attrs.Labels {
 		if k == LabelMarker {
 			k = s3client.MarkerTag
@@ -270,6 +273,9 @@ func (s *Store) CreateBucket(ctx context.Context, p s3client.BucketParams) error
 	attrs := &storage.BucketAttrs{
 		Location: s.location, VersioningEnabled: p.Versioning,
 		Labels: map[string]string{LabelMarker: p.Marker}, Lifecycle: lifecycleOf(p.Rules),
+		// Hardened as new S3 buckets are: no object ACLs, no public access.
+		UniformBucketLevelAccess: storage.UniformBucketLevelAccess{Enabled: true},
+		PublicAccessPrevention:   storage.PublicAccessPreventionEnforced,
 	}
 	if err := s.client.Bucket(p.Name).Create(ctx, s.project, attrs); err != nil {
 		if statusOf(err) == http.StatusConflict {
@@ -294,6 +300,12 @@ func (s *Store) UpdateBucket(ctx context.Context, p s3client.BucketParams, cur s
 	}
 	if cur.Versioning != p.Versioning {
 		u.VersioningEnabled = p.Versioning
+		changed = true
+	}
+	// Only a bucket this claim owns (its label) is hardened again.
+	if cur.Drifted && cur.Marker() == p.Marker {
+		u.UniformBucketLevelAccess = &storage.UniformBucketLevelAccess{Enabled: true}
+		u.PublicAccessPrevention = storage.PublicAccessPreventionEnforced
 		changed = true
 	}
 	// GCS rules have no ID, whatever the caller's copy of the state says.

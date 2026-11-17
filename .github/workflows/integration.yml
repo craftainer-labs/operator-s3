@@ -13,9 +13,9 @@
 # so those stay unverified by CI.
 #
 # The GCS store (NKs3-2a buckets): fake-gcs-server in a third job. It keeps a
-# bucket's name and versioning only (labels, lifecycle rules and the location
-# are accepted and dropped), enforces no IAM and validates no token, and has no
-# service accounts, bucket IAM policies or HMAC keys, so the ownership label,
+# bucket's name and versioning only (labels, lifecycle rules, the location and
+# the IAM configuration are accepted and dropped), enforces no IAM and validates
+# no token, and has no service accounts, bucket IAM policies or HMAC keys, so the ownership label,
 # the lifecycle rules, a refused credential and everything BucketAccess on GCP
 # will need stay unverified by CI.
 #

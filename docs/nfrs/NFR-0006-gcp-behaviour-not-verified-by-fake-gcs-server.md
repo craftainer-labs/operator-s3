@@ -19,6 +19,11 @@ checked elsewhere or documented as unverified. fake-gcs-server cannot check:
   check that the store sends them, against an httptest fake of the JSON API
   written from Google's reference; whether GCS keeps and returns them as the
   fake does (label value limits, the shape of a returned rule) is not checked.
+- **Uniform bucket-level access and public access prevention.** It accepts
+  and drops `iamConfiguration` and never returns it, so the integration lane
+  cannot assert that they are set or read back (a bucket there always reads as
+  drifted). The unit tests assert what the store sends and how it reads a
+  bucket; that GCS applies and reports them is not checked.
 - **Authentication and IAM.** It validates no token and enforces no
   permission, so a refused credential, the `403` of a bucket another project
   holds, `storage.buckets.list` as the probe's permission, and the

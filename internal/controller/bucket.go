@@ -192,7 +192,7 @@ func (e *bucketExternal) Observe(ctx context.Context, spec s3v1alpha1.BucketSpec
 	if err != nil {
 		return none, err
 	}
-	upToDate := st.Marker() == e.marker && st.Versioning == p.Versioning && st.Quota == p.Quota &&
+	upToDate := st.Marker() == e.marker && !st.Drifted && st.Versioning == p.Versioning && st.Quota == p.Quota &&
 		s3client.RulesMatch(st, p.Rules)
 	return lifecycle.Observation[s3client.BucketState]{Exists: true, UpToDate: upToDate, Current: st}, nil
 }

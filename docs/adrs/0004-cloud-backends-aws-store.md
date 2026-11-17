@@ -194,5 +194,9 @@ identifiers, the service account marker) goes back to G-api.
   [NFR-0006](../nfrs/NFR-0006-gcp-behaviour-not-verified-by-fake-gcs-server.md).
 - The label and the lifecycle rules are checked against an httptest fake of
   the JSON API, not against GCS, until a real project is used.
+- Buckets are created hardened (uniform bucket-level access, public access
+  prevention enforced) and a claim's own bucket that drifted is hardened again,
+  as Google recommends and as AWS gives new buckets (ACLs disabled, Block Public
+  Access). It fits the proposed IAM-role based BucketAccess. No API field.
 - The location is applied at create only; a bucket in another location is
   neither moved nor reported.

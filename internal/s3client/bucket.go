@@ -40,6 +40,10 @@ type BucketState struct {
 	NoRuleIDs bool
 	// Quota is the hard quota in bytes; 0 is none.
 	Quota int64
+	// Drifted is set by a store when a setting only that store manages differs
+	// from what it wants (GCS: uniform bucket-level access, public access
+	// prevention); the bucket is then not up to date.
+	Drifted bool
 }
 
 // Marker is the claim recorded in the MarkerTag, or "".

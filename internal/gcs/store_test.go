@@ -383,3 +383,47 @@ func TestNewErrors(t *testing.T) {
 		t.Error("an unusable emulator host was accepted")
 	}
 }
+
+// A bucket is created with uniform bucket-level access and public access
+// prevention enforced; a bucket that lost them is Drifted and is hardened again
+// only when it carries the claim's label.
+func TestBucketsAreHardened(t *testing.T) {
+	f := newFakeGCS()
+	s := newStore(t, f)
+	ctx := context.Background()
+	p := params(s, "b1")
+	if err := s.CreateBucket(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	iam, _ := f.bucket("b1")["iamConfiguration"].(map[string]any)
+	ubla, _ := iam["uniformBucketLevelAccess"].(map[string]any)
+	if ubla["enabled"] != true || iam["publicAccessPrevention"] != "enforced" {
+		t.Errorf("created with iamConfiguration %+v", iam)
+	}
+	st, err := s.Bucket(ctx, "b1")
+	if err != nil || st.Drifted {
+		t.Fatalf("a hardened bucket is drifted: %+v, %v", st, err)
+	}
+
+	// Another label owns the bucket: it is not touched.
+	f.buckets["b1"]["iamConfiguration"] = map[string]any{}
+	st, _ = s.Bucket(ctx, "b1")
+	if !st.Drifted {
+		t.Fatalf("an unhardened bucket is not drifted: %+v", st)
+	}
+	other := st
+	other.Tags = map[string]string{s3client.MarkerTag: "other"}
+	f.reset()
+	if err := s.UpdateBucket(ctx, p, other); err != nil || strings.Contains(f.callList(), "PATCH") {
+		t.Errorf("a bucket of another claim was written: %v\n%s", err, f.callList())
+	}
+
+	// The claim's own bucket is hardened again.
+	f.reset()
+	if err := s.UpdateBucket(ctx, p, st); err != nil || !strings.Contains(f.callList(), "PATCH") {
+		t.Fatalf("drift: %v\n%s", err, f.callList())
+	}
+	if st, _ = s.Bucket(ctx, "b1"); st.Drifted {
+		t.Errorf("still drifted after the update: %+v", st)
+	}
+}
