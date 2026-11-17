@@ -51,7 +51,9 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   to keep it. A crash between the Secret write and the status write therefore
   neither deletes a key in use nor leaves a third key to hit the limit. Only
   reissuing a lost active key (not a rotation) keeps
-  `status.rotation.previous`, still in its grace period.
+  `status.rotation.previous`, still in its grace period. When no key is
+  recorded as active but the Secret holds a key of the user, that key is kept
+  as the active one: a rotation never deletes the key the Secret holds.
 - **A bucket quota is refused.** A `Bucket` with `spec.quota` on an AWS store is
   `Synced=False`, reason `ReconcileError`, and nothing is changed. A quota
   cannot be read back, so an operator that applied one would update in a loop.
