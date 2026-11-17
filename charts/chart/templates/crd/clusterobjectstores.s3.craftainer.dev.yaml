@@ -362,7 +362,7 @@ spec:
             - message: adminCredentialsSecretRef.namespace is required on a cluster-scoped
                 store
               rule: '!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace)
-                && self.adminCredentialsSecretRef.namespace != '''')'
+                && size(self.adminCredentialsSecretRef.namespace) > 0)'
             - message: 'provider cannot be added or removed: a store cannot move between
                 clouds or between cloud and self-hosted'
               rule: has(self.provider) == has(oldSelf.provider)
