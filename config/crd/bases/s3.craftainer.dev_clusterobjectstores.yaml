@@ -360,6 +360,9 @@ spec:
                 store
               rule: '!has(self.adminCredentialsSecretRef) || (has(self.adminCredentialsSecretRef.namespace)
                 && self.adminCredentialsSecretRef.namespace != '''')'
+            - message: 'provider cannot be added or removed: a store cannot move between
+                clouds or between cloud and self-hosted'
+              rule: has(self.provider) == has(oldSelf.provider)
           status:
             description: status defines the observed state of ClusterObjectStore
             properties:

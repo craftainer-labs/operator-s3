@@ -282,6 +282,9 @@ spec:
             - message: 'adminCredentialsSecretRef.namespace must not be set: the Secret
                 is in the ObjectStore''s namespace'
               rule: '!has(self.adminCredentialsSecretRef) || !has(self.adminCredentialsSecretRef.namespace)'
+            - message: 'provider cannot be added or removed: a store cannot move between
+                clouds or between cloud and self-hosted'
+              rule: has(self.provider) == has(oldSelf.provider)
           status:
             description: status defines the observed state of ObjectStore
             properties:

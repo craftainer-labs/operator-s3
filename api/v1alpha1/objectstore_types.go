@@ -109,6 +109,7 @@ type NamespacedStoreProvider struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.credentials) || has(self.provider)",message="credentials is allowed only with a provider"
 // +kubebuilder:validation:XValidation:rule="!has(self.provider) || has(self.credentials)",message="a namespaced store with a provider needs credentials with source Secret"
 // +kubebuilder:validation:XValidation:rule="!has(self.adminCredentialsSecretRef) || !has(self.adminCredentialsSecretRef.namespace)",message="adminCredentialsSecretRef.namespace must not be set: the Secret is in the ObjectStore's namespace"
+// +kubebuilder:validation:XValidation:rule="has(self.provider) == has(oldSelf.provider)",message="provider cannot be added or removed: a store cannot move between clouds or between cloud and self-hosted"
 type ObjectStoreSpec struct {
 	common.CloudServerCommon `json:",inline"`
 	ObjectStoreConfig        `json:",inline"`

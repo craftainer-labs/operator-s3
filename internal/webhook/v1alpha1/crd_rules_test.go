@@ -119,6 +119,22 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			Expect(create(s)).To(Succeed())
 		})
 
+		It("does not let a store gain or lose its provider", func() {
+			s := clusterStore("gain-provider")
+			Expect(create(s)).To(Succeed())
+			s.Spec.Endpoint = ""
+			s.Spec.AdminCredentialsSecretRef = nil
+			s.Spec.Provider = awsClusterStore("x").Spec.Provider
+			rejected(k8sClient.Update(ctx, s), "provider cannot be added or removed")
+
+			a := awsClusterStore("lose-provider")
+			Expect(create(a)).To(Succeed())
+			a.Spec.Provider = nil
+			a.Spec.Endpoint = "https://rustfs:9000"
+			a.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin", Namespace: "craftainer-system"}
+			rejected(k8sClient.Update(ctx, a), "provider cannot be added or removed")
+		})
+
 		It("rejects an empty credentials source", func() {
 			s := awsClusterStore("aws-empty-source")
 			s.Spec.Credentials = &cloud.Credentials{} // sent as source "", which the enum refuses
@@ -254,6 +270,24 @@ var _ = Describe("The s3.craftainer.dev CRDs", func() {
 			s := store("with-ns")
 			s.Spec.AdminCredentialsSecretRef.Namespace = "elsewhere"
 			rejected(create(s), "adminCredentialsSecretRef.namespace must not be set")
+		})
+
+		It("does not let a store gain or lose its provider", func() {
+			s := store("gain-provider")
+			Expect(create(s)).To(Succeed())
+			s.Spec.Endpoint = ""
+			s.Spec.AdminCredentialsSecretRef = nil
+			s.Spec.Provider = awsStore("x").Spec.Provider
+			s.Spec.Credentials = awsStore("x").Spec.Credentials
+			rejected(k8sClient.Update(ctx, s), "provider cannot be added or removed")
+
+			a := awsStore("lose-provider")
+			Expect(create(a)).To(Succeed())
+			a.Spec.Provider = nil
+			a.Spec.Credentials = nil
+			a.Spec.Endpoint = "https://rustfs:9000"
+			a.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: "admin"}
+			rejected(k8sClient.Update(ctx, a), "provider cannot be added or removed")
 		})
 
 		It("admits a store on AWS with a Secret in its own namespace", func() {
