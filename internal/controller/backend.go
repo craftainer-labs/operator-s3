@@ -16,7 +16,6 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -209,7 +208,7 @@ func awsEndpoint(b cloud.AWSClusterBlock) string {
 		return b.EndpointOverride
 	}
 	suffix := ""
-	if strings.HasPrefix(b.Region, "cn-") {
+	if s3client.Partition(b.Region) == "aws-cn" {
 		suffix = ".cn"
 	}
 	return "https://s3." + b.Region + ".amazonaws.com" + suffix

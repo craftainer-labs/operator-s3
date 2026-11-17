@@ -25,7 +25,7 @@ func TestDerivedNames(t *testing.T) {
 	if got := UserName("team-a", "orders-app"); len(hashOf(got)) != 16 {
 		t.Errorf("user = %q: want the long hash (16 characters)", got)
 	}
-	doc := AccessPolicy("b", "", true)
+	doc := AccessPolicy("aws", "b", "", true)
 	if len(PolicyName(user, doc)) > 63 {
 		t.Errorf("policy name = %q", PolicyName(user, doc))
 	}
@@ -62,10 +62,28 @@ func TestAccessKeyIsDeterministicPerGeneration(t *testing.T) {
 	}
 }
 
+func TestPartition(t *testing.T) {
+	for region, want := range map[string]string{
+		"us-east-1": "aws", "eu-west-1": "aws", "": "aws", "cn-north-1": "aws-cn", "cn-northwest-1": "aws-cn",
+		"us-gov-west-1": "aws-us-gov", "us-gov-east-1": "aws-us-gov",
+		"us-iso-east-1": "aws-iso", "us-isob-east-1": "aws-iso-b", "eu-isoe-west-1": "aws-iso-e", "us-isof-south-1": "aws-iso-f", "eusc-de-east-1": "aws-eusc",
+	} {
+		if got := Partition(region); got != want {
+			t.Errorf("Partition(%q) = %q, want %q", region, got, want)
+		}
+	}
+	for partition, arn := range map[string]string{"aws-cn": `"arn:aws-cn:s3:::bkt/*"`, "aws-us-gov": `"arn:aws-us-gov:s3:::bkt"`} {
+		doc := string(AccessPolicy(partition, "bkt", "", true))
+		if !strings.Contains(doc, arn) || strings.Contains(doc, "arn:aws:") {
+			t.Errorf("%s policy: %s", partition, doc)
+		}
+	}
+}
+
 func TestAccessPolicy(t *testing.T) {
-	rw := string(AccessPolicy("bkt", "app/", true))
-	ro := string(AccessPolicy("bkt", "app/", false))
-	whole := string(AccessPolicy("bkt", "", false))
+	rw := string(AccessPolicy("aws", "bkt", "app/", true))
+	ro := string(AccessPolicy("aws", "bkt", "app/", false))
+	whole := string(AccessPolicy("aws", "bkt", "", false))
 	for _, want := range []string{`"arn:aws:s3:::bkt/app/*"`, `"s3:PutObject"`, `"s3:DeleteObject"`, `"s3:ListBucketMultipartUploads"`,
 		`"StringLike":{"s3:prefix":["app/*"]}`, `"s3:GetBucketLocation"`} {
 		if !strings.Contains(rw, want) {

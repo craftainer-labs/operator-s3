@@ -28,7 +28,7 @@ func TestSigV4IsAccepted(t *testing.T) {
 		t.Fatalf("signed GET: HTTP %d: %s", status, body)
 	}
 	name := unique("it-sig")
-	doc := s3client.AccessPolicy("it-sig-bucket", "", false)
+	doc := s3client.AccessPolicy("aws", "it-sig-bucket", "", false)
 	status, body := sv.raw(t, http.MethodPut, "/add-canned-policy", url.Values{"name": {name}}, doc)
 	if status != http.StatusOK {
 		t.Fatalf("signed PUT with a body: HTTP %d: %s", status, body)
@@ -132,7 +132,7 @@ func TestUserInfo(t *testing.T) {
 
 	// A second policy, attached by hand, makes the list.
 	hand := unique("it-hand")
-	handDoc := s3client.AccessPolicy("it-info-bucket", "", true)
+	handDoc := s3client.AccessPolicy("aws", "it-info-bucket", "", true)
 	if status, body := sv.raw(t, http.MethodPut, "/add-canned-policy", url.Values{"name": {hand}}, handDoc); status != http.StatusOK {
 		t.Fatalf("add-canned-policy: HTTP %d: %s", status, body)
 	}

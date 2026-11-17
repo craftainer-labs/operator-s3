@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/craftainer-labs/lib-operator-go/pkg/apis/common"
@@ -238,5 +239,117 @@ func TestAWSAccessStoreFailures(t *testing.T) {
 	}
 	if err := e.RotateFinish(ctx, spec, AccessState{}, st); err != nil || len(store.generated) != 1 || store.generated[0].id != "AKIAACTIVE" {
 		t.Errorf("rotate finish: %v, %v", err, store.generated)
+	}
+}
+
+// A crash between writing the binding Secret and recording the new key leaves
+// the Secret holding a key that status does not name. The retry reuses it, and
+// deletes neither it nor makes a third key, even with IAM's two keys present.
+func TestAWSRotateBeginAfterACrash(t *testing.T) {
+	ctx := context.Background()
+	spec := s3v1alpha1.BucketAccessSpec{}
+	st := lifecycle.RotationState{Active: "AKIAACTIVE"}
+	controller := true
+	holding := func(id, secret string) func(context.Context) (*corev1.Secret, error) {
+		return func(context.Context) (*corev1.Secret, error) {
+			return &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{UID: "uid-1", Controller: &controller}}},
+				Data:       map[string][]byte{"accessKeyId": []byte(id), "secretAccessKey": []byte(secret)},
+			}, nil
+		}
+	}
+
+	// Two keys, the binding holds the new one: it is reused.
+	e, store := awsExt(t)
+	store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIANEW", secret: "new"}}
+	e.binding = holding("AKIANEW", "new")
+	data, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st)
+	if err != nil || gen != "AKIANEW" || string(data["accessKeyId"]) != "AKIANEW" || string(data["secretAccessKey"]) != "new" {
+		t.Fatalf("reuse: %v, %q, %v", err, gen, data)
+	}
+	if len(store.generated) != 2 || store.issued != 0 {
+		t.Errorf("a key was made or deleted: %v", store.generated)
+	}
+
+	// A third, stray key goes; the active and the binding's stay.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIANEW", secret: "new"}, {id: "AKIASTRAY", secret: "x"}}
+	e.binding = holding("AKIANEW", "new")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st); err != nil || gen != "AKIANEW" || len(store.generated) != 2 ||
+		store.generated[0].id != "AKIAACTIVE" || store.generated[1].id != "AKIANEW" {
+		t.Errorf("stray: %v, %q, %v", err, gen, store.generated)
+	}
+
+	// The binding holds a key that is gone, or has no secret, or is the active
+	// one: nothing is reused, the leftovers go and a new key is made.
+	for name, bind := range map[string]func(context.Context) (*corev1.Secret, error){
+		"gone":      holding("AKIAGONE", "s"),
+		"no secret": holding("AKIANEW", ""),
+		"active":    holding("AKIAACTIVE", "old"),
+		"no Secret": func(context.Context) (*corev1.Secret, error) { return nil, nil },
+		"foreign": func(context.Context) (*corev1.Secret, error) {
+			return &corev1.Secret{Data: map[string][]byte{"accessKeyId": []byte("AKIANEW"), "secretAccessKey": []byte("new")}}, nil
+		},
+	} {
+		e, store = awsExt(t)
+		store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIANEW", secret: "new"}}
+		e.binding = bind
+		_, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st)
+		if err != nil || gen == "AKIANEW" || gen == "" || len(store.generated) != 2 || store.generated[0].id != "AKIAACTIVE" {
+			t.Errorf("%s: %v, %q, %v", name, err, gen, store.generated)
+		}
+	}
+
+	// The binding holds the previous key: it is not taken for the new one. IAM's
+	// limit of two keys leaves no room to keep it beside the active one, so it
+	// goes with the other leftovers and a new key is made.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIAPREV", secret: "p"}}
+	e.claim.SetRotationStatus(common.RotationStatus{Active: "AKIAACTIVE", Previous: "AKIAPREV"})
+	e.binding = holding("AKIAPREV", "p")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st); err != nil || gen == "AKIAPREV" || gen == "" || len(store.generated) != 2 || store.generated[0].id != "AKIAACTIVE" {
+		t.Errorf("previous: %v, %q, %v", err, gen, store.generated)
+	}
+
+	// No active key is recorded: the Secret's key is not taken for a new one.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIANEW", secret: "new"}}
+	e.binding = holding("AKIANEW", "new")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, lifecycle.RotationState{}); err != nil || gen == "AKIANEW" || gen == "" {
+		t.Errorf("no active: %v, %q", err, gen)
+	}
+
+	// The Secret cannot be read, or the keys cannot be listed or deleted.
+	e, _ = awsExt(t)
+	e.binding = func(context.Context) (*corev1.Secret, error) { return nil, errStore }
+	if _, _, err := e.RotateBegin(ctx, spec, AccessState{}, st); !errors.Is(err, errStore) {
+		t.Errorf("binding fails: %v", err)
+	}
+	for _, method := range []string{"Keys", "RemoveKey"} {
+		e, store = awsExt(t)
+		store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIANEW", secret: "new"}, {id: "AKIASTRAY", secret: "x"}}
+		e.binding = holding("AKIANEW", "new")
+		store.fail[method] = errStore
+		if _, _, err := e.RotateBegin(ctx, spec, AccessState{}, st); !errors.Is(err, errStore) {
+			t.Errorf("reuse, %s: %v", method, err)
+		}
+	}
+}
+
+// Issuing a key again (the active one is gone) keeps the previous generation,
+// still in its grace period, and drops only the keys that are neither.
+func TestAWSIssueKeepsThePreviousKey(t *testing.T) {
+	ctx := context.Background()
+	e, store := awsExt(t)
+	store.generated = []memKey{{id: "AKIAPREVIOUS", secret: "p"}, {id: "AKIASTRAY", secret: "x"}}
+	e.claim.SetRotationStatus(common.RotationStatus{Active: "AKIAGONE", Previous: "AKIAPREVIOUS"})
+	data, err := e.issue(ctx, "AKIAGONE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := e.claim.GetRotationStatus()
+	if len(store.generated) != 2 || store.generated[0].id != "AKIAPREVIOUS" || rs.Previous != "AKIAPREVIOUS" ||
+		rs.Active == "" || rs.Active == "AKIAGONE" || string(data["accessKeyId"]) != rs.Active {
+		t.Errorf("rotation %+v, keys %v", rs, store.generated)
 	}
 }

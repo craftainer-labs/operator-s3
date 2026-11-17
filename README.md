@@ -246,13 +246,22 @@ request dials through the egress policy and the store's `proxyURL`, and
   and `status.rotation.active` the access key id; the binding Secret is the
   usual `s3` binding plus `cloud: aws`. The path and the boundary apply when the
   user is created; changing them later does not move or re-bound an existing
-  user. The policy ARNs use the `aws` partition (no China or GovCloud yet).
+  user. The policy's bucket ARN is in the
+  partition of the store's region: `aws-cn` for `cn-` regions, `aws-us-gov` for
+  `us-gov-` regions, `aws-iso`, `aws-iso-b`, `aws-iso-e`, `aws-iso-f` or `aws-eusc` for the
+  isolated and sovereign regions, `aws` otherwise. The default endpoint is the
+  public one, so an isolated or sovereign region needs
+  `provider.aws.endpointOverride`.
 - **Rotation uses the user's two access keys.** IAM generates the key and shows
   the secret once. A rotation creates the second key, writes it to the binding
   Secret, and after the grace period deletes every key but the new one. Before
-  creating a key, the operator deletes the keys that are not the active one: a
-  key whose secret was lost to a crash is never a reason to hit IAM's limit of
-  two. Delete order is keys, policies, user.
+  creating a key, the operator deletes the keys that are neither the active
+  one nor the one the binding Secret holds: a key whose secret was lost to a
+  crash is never a reason to hit IAM's limit of two. A retry after a crash
+  between writing the binding Secret and recording the key reuses the key the
+  Secret holds, when the Secret is the claim's, a key is active, and the key
+  is neither the active nor the previous one and is still on the user; with
+  any other Secret nothing is reused. Delete order is keys, policies, user.
 - **IAM is eventually consistent.** A user or key created a moment ago may not
   be visible to the next call, and a new key may not work at once. A call that
   finds an entity missing right after the operator made it, or a change in
@@ -284,6 +293,16 @@ request dials through the egress policy and the store's `proxyURL`, and
 
 ### Known limits
 
+- On an AWS store, `provider.aws.iamPath` and `permissionsBoundaryARN` apply
+  only when the IAM user is created; changing them later does not move or
+  re-bound an existing user.
+- An IAM user that carries an inline policy the operator did not name (a
+  foreign policy) keeps the claim from being up to date: the operator only
+  removes policies it named, so the claim stays not-up-to-date until that
+  policy is removed by hand.
+- `provider.aws.endpointOverride` is used for the S3 calls, but only its scheme
+  and host reach the binding Secret's `endpoint` and `status.discovered.endpoint`:
+  the override's path is dropped.
 - Policy document drift is not detected, only which policy is attached.
 - RustFS removes every service account of a user together with the user. The
   operator derives the service accounts it deletes by name, but it cannot spare

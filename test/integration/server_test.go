@@ -310,7 +310,7 @@ func (s server) makeBucket(t *testing.T, name string, lock bool) *minio.Client {
 
 // access is the IAM side of a BucketAccess for the bucket and prefix.
 func access(user, bucket, prefix string, write bool) s3client.AccessParams {
-	doc := s3client.AccessPolicy(bucket, prefix, write)
+	doc := s3client.AccessPolicy("aws", bucket, prefix, write)
 	return s3client.AccessParams{User: user, Secret: newSecret(), Policy: s3client.PolicyName(user, doc), PolicyDoc: doc}
 }
 

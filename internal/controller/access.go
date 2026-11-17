@@ -244,13 +244,22 @@ func (e *accessExternal) keyExists(ctx context.Context, key string) (bool, error
 	return key != "" && slices.Contains(ids, key), err
 }
 
+// partition is the AWS partition the policy's ARNs are in: the store's region
+// on AWS, aws on RustFS.
+func (e *accessExternal) partition() string {
+	if e.be.gen == nil {
+		return "aws"
+	}
+	return s3client.Partition(e.be.region())
+}
+
 // policy builds the access policy and its name, refusing a prefix that would
 // widen it.
 func (e *accessExternal) policy(spec s3v1alpha1.BucketAccessSpec) (string, []byte, error) {
 	if !s3v1alpha1.PrefixOK(spec.Prefix) {
 		return "", nil, ErrInvalidPrefix
 	}
-	doc := s3client.AccessPolicy(e.bucket, spec.Prefix, spec.Access != s3v1alpha1.AccessReadOnly)
+	doc := s3client.AccessPolicy(e.partition(), e.bucket, spec.Prefix, spec.Access != s3v1alpha1.AccessReadOnly)
 	return s3client.PolicyName(e.user, doc), doc, nil
 }
 
@@ -448,11 +457,7 @@ func (e *accessExternal) Delete(ctx context.Context, _ AccessState) error {
 // account. Its key follows from the sequence, so it is the same on a retry.
 func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAccessSpec, _ AccessState, st lifecycle.RotationState) (binding.Data, lifecycle.Generation, error) {
 	if e.be.gen != nil {
-		// The second key of the user. Every other key is a leftover of a
-		// crashed rotation (its secret was never written to the binding
-		// Secret) and goes first, so a retry never hits IAM's limit of two.
-		data, id, err := e.issueGenerated(ctx, string(st.Active))
-		return data, lifecycle.Generation(id), err
+		return e.rotateBeginGenerated(ctx, string(st.Active))
 	}
 	next := e.key(st.Sequence + 1)
 	data, err := e.issue(ctx, next)
@@ -460,6 +465,44 @@ func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAcc
 		return nil, "", err
 	}
 	return data, lifecycle.Generation(next), nil
+}
+
+// rotateBeginGenerated is RotateBegin on AWS: the user's second key. A crash
+// between writing the binding Secret and recording the new key leaves the
+// Secret holding a key that status does not name yet. A retry must not delete
+// it: when the claim's Secret holds a key of the user other than the active or
+// the previous one, with its secret, that key is the generation being issued
+// and is reused (so no third key is made). Every other key is a leftover whose secret nobody holds
+// and goes first, so a retry never hits IAM's limit of two.
+func (e *accessExternal) rotateBeginGenerated(ctx context.Context, active string) (binding.Data, lifecycle.Generation, error) {
+	s, err := e.binding(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	// Only a Secret of this claim counts, and only while a key is active: with
+	// none recorded nothing says which key is the old one. The previous
+	// generation, still in its grace period, is never the new one.
+	rs := e.claim.GetRotationStatus()
+	if s != nil && active != "" && metav1.IsControlledBy(s, e.claim) && len(s.Data["secretAccessKey"]) > 0 {
+		if held := string(s.Data["accessKeyId"]); held != "" && held != active && held != rs.Previous {
+			ids, err := e.be.gen.Keys(ctx, e.user)
+			if err != nil {
+				return nil, "", err
+			}
+			if slices.Contains(ids, held) {
+				for _, id := range ids {
+					if id != held && id != active {
+						if err := e.be.gen.RemoveKey(ctx, e.user, id); err != nil {
+							return nil, "", err
+						}
+					}
+				}
+				return e.data(held, string(s.Data["secretAccessKey"])), lifecycle.Generation(held), nil
+			}
+		}
+	}
+	data, id, err := e.issueGenerated(ctx, active)
+	return data, lifecycle.Generation(id), err
 }
 
 // RotateFinish implements lifecycle.Rotator. After a rotation the sequence is
