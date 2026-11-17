@@ -128,7 +128,7 @@ GCS. Rules, as in ADR 0004:
   else; when `false`, the account overrides every container. The operator
   documents it as an admin prerequisite (the README and the NFR say: set
   `allowBlobPublicAccess=false`, which is also the secure default for new
-  accounts). Reading it needs `armstorage` and the `Reader` role on the
+  accounts). Reading it needs `armstorage` and the ARM `Reader` role on the
   account; see D4.
 - No object ACLs exist on Azure, so nothing corresponds to S3 ACL disabling.
 
@@ -374,7 +374,7 @@ way, as in ADR 0004.
 as an admin prerequisite, harden only the container (the lean). (b) Read it
 through ARM in the probe and report a store whose account allows public access
 as degraded (a new condition message, not a new condition type); needs
-`armstorage` and `Reader` on the account. (a) keeps the operator data-plane
+`armstorage` and the ARM `Reader` role on the account. (a) keeps the operator data-plane
 only; (b) turns a silent exposure into a visible one. Lean (a) now, (b) with
 D2(b) if that is chosen.
 
@@ -398,8 +398,9 @@ a principal name, and needs a CEL pattern (16.4 has only `maxLength: 320`);
 `username` in the binding is that GUID (16.5 says the name); `authMode` is a
 key of an s3 binding (16.5 lists it for db and cache only); and, as
 section 16.8 decision 6 decided no allow-list, a tenant can grant its bucket to
-any object ID in the tenant (the same exposure decided for db and cache, and
-for a data role only on its own container). Sub-choices:
+any object ID in the tenant. That is the same lack of an allow-list decided
+for db and cache; the Azure grant is narrower in scope (one data role on the
+claim's own container, not a database role or an ACL policy). Sub-choices:
 
 - (i) The principal is an Entra **object ID** GUID (the lean), versus a name,
   which would need Graph.
@@ -421,15 +422,23 @@ new meanings is itself a G-api point: the proposal reuses
 `AuthModeUnsupported`, `IAMPrincipalRequired`, `NameCollision`,
 `ReconcileError` and `RotationNotApplicable`.
 
+Lean for D6 as a whole: all of (i) to (v) as stated, as one G-api review item.
+The user may take them separately.
+
 **D7. Binding shape (G-api).** The keys above, with `type` still `s3`, and no
-S3 keys. Alternative: a new binding type `azure-blob`, which would break the
-"every cloud binding keeps the section 7 type" rule in section 16.5. Lean:
-keep `s3`, with `cloud: azure` as the discriminator.
+S3 keys. Options: (a) keep `s3` with `cloud: azure` as the discriminator: one binding
+type for every cloud, and consumers branch on `cloud`, but a consumer that
+ignores `cloud` and expects S3 keys fails at runtime. (b) A new binding type
+`azure-blob`: a consumer cannot mistake it for S3, but it breaks the "every
+cloud binding keeps the section 7 type" rule in section 16.5 and adds a
+type to the binding spec. Lean (a).
 
 **D8. Status identifiers (G-api).** Bucket: name and the container's ARM ID.
-BucketAccess: the role assignment's name and full ID. Alternatives: the blob
-URL for the bucket's `externalId` (reachable, but not an ARM identity and not
-the RBAC scope). Lean: the ARM ID.
+BucketAccess: the role assignment's name and full ID. Options: (a) the ARM resource ID as
+`externalId` (the lean: it is the RBAC scope and an identity an admin can look
+up, but it is long and says nothing to a consumer); (b) the blob URL (a
+consumer can use it directly, but it is not an ARM identity and not the RBAC
+scope, and it repeats `endpoint` and `bucket`).
 
 **D9. Prefix.** (a) Refuse `prefix` on Azure in v1 (the lean). (b) Support it
 with an ABAC condition on the role assignment, with the attribute names above.
@@ -440,8 +449,9 @@ check against a real account.
 **D10. The operator's role-assignment permissions.** (a) `Role Based Access Control
 Administrator` on the storage account, with an ABAC condition limiting the
 roles and principal types it may assign (the lean). (b) `User Access
-Administrator` or `Owner`: can grant itself anything. Needs the admin's setup;
-the README documents it and says the condition is not verified in CI.
+Administrator` or `Owner`: no condition to maintain, but it can grant itself
+anything. (a) needs the admin's setup, and the README documents it and says
+the condition is not verified in CI. Lean (a).
 
 **D11. Dependencies.** A deps-alone item for `armauthorization/v3` before the
 BucketAccess item (the lean), and `armstorage` only if D2(b) or D4(b) is
@@ -459,7 +469,7 @@ credential type to maintain and to leak).
 discovering `accountId` and `endpoint`, no region (the lean; data plane only,
 the smallest read that proves the identity may use the account). (b) An ARM
 read of the account (`armstorage`), which adds `region` and the public-access
-setting but needs `Reader` and the extra dependency (it goes with D2(b) and
+setting but needs the ARM `Reader` role and the extra dependency (it goes with D2(b) and
 D4(b)). (c) A `GetAccountInfo` call: it returns the SKU and account kind but
 no location, so it adds little over (a). Lean (a).
 
@@ -493,16 +503,17 @@ from D10's role-assignment right.
 - (b) A custom role with the container actions (`containers/read`, `write`,
   `delete`) and the data action `containers/blobs/read`, with no blob write or
   delete. The read action is needed for the empty-check listing (D15) and also
-  lets a caller read blob contents. So (b) removes blob-level writes and
-  deletes but not container-level destruction (`containers/delete` removes
-  every blob in the container, so the empty-check is the only guard) and not
-  reads. The admin must maintain the role, the action set is verified only
+  lets a caller read blob contents. So, against (a), (b) removes only
+  blob-level writes and deletes. Both options can still delete a container,
+  and with it every blob, and both can read blobs; in both, the D15 empty-check
+  and account soft delete are the mitigations. If D2(b) or D13(b) is chosen,
+  the role also needs the ARM account read. The admin must maintain the role, the action set is verified only
   against a real account, and an option-B SAS later (D5) would also need
   `generateUserDelegationKey` (`Storage Blob Delegator`) added.
 - (c) Account keys: full account authority and a secret to store.
 
-Lean (b). If the user does not accept the manual verification, (a) is the
-fallback; (c) is not proposed. The README documents whichever is chosen.
+Lean (b), which needs the manual verification the Consequences list; (a) is
+the alternative if the user does not accept that, and (c) is not proposed. The README documents whichever is chosen.
 
 **D17. Duplicate role assignments.** Azure refuses two assignments with the
 same principal, role and scope. (a) Report `409 RoleAssignmentExists` as a
@@ -528,6 +539,8 @@ earlier, with a CEL or webhook rule. Lean (a).
   and it may wait up to 10 minutes after `Ready` for the role to apply.
 - The operator needs a role-assignment permission on the account. Narrowing it
   with an ABAC condition is a manual, admin-side setup that CI cannot verify.
+- The operator also needs container-level data-plane rights (D16); a custom
+  role for them is a second admin-side setup that only a real account verifies.
 - Nothing about role assignments, public access settings or RBAC is verified
   against Azure until a real subscription is used; a release that changes the
   Azure store is run once by hand against one, like the GCS store.
