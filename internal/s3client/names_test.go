@@ -66,6 +66,7 @@ func TestPartition(t *testing.T) {
 	for region, want := range map[string]string{
 		"us-east-1": "aws", "eu-west-1": "aws", "": "aws", "cn-north-1": "aws-cn", "cn-northwest-1": "aws-cn",
 		"us-gov-west-1": "aws-us-gov", "us-gov-east-1": "aws-us-gov",
+		"us-iso-east-1": "aws-iso", "us-isob-east-1": "aws-iso-b", "eu-isoe-west-1": "aws-iso-e", "us-isof-south-1": "aws-iso-f",
 	} {
 		if got := Partition(region); got != want {
 			t.Errorf("Partition(%q) = %q, want %q", region, got, want)

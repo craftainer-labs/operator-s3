@@ -42,8 +42,9 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   grace period, deletes every key but the new one. Because IAM's secret is
   shown once and its id cannot be derived, a retry of a crashed rotation
   cannot reissue the same key. Instead `RotateBegin` keeps the key the binding
-  Secret already holds (when it differs from `status.rotation.active`, exists
-  and has a secret) and reuses it; every key that is neither it nor the active
+  Secret already holds and reuses it, when the Secret is controlled by the
+  claim, a key is active, and the held key has a secret, exists on the user and
+  is neither `status.rotation.active` nor `status.rotation.previous`; every key that is neither it nor the active
   one is a leftover whose secret nobody holds and is deleted first. So a
   crash between the Secret write and the status write neither deletes a key in
   use nor leaves a third key to hit the limit. Reissuing a lost active key
@@ -58,7 +59,9 @@ semantics differ from RustFS's in ways that matter to ownership and rotation:
   the claim reports the store unreachable rather than guess. A create that
   loses a race answers `BucketAlreadyExists`, a `NameCollision`.
 - **The partition follows the region.** `cn-` is `aws-cn`, `us-gov-` is
-  `aws-us-gov`, anything else `aws`. It sets the ARN of the access policy and
+  `aws-us-gov`, `us-iso-`, `us-isob-`, `eu-isoe-` and `us-isof-` are `aws-iso`,
+  `aws-iso-b`, `aws-iso-e` and `aws-iso-f`, anything else `aws`. The region is
+  `provider.aws.region`, so an endpoint override does not change it. It sets the ARN of the access policy and
   the China endpoint domain; an endpoint override is used as given.
 - **IAM settling is retried, never waited for.** A missing entity right after
   the operator made it, or a change in flight, is a `lifecycle.PendingError`,

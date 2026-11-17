@@ -21,7 +21,8 @@ type policyDocument struct {
 }
 
 // Partition is the AWS partition of a region: aws-cn for the China regions,
-// aws-us-gov for GovCloud and aws for every other. It is the second field of an
+// aws-us-gov for GovCloud, aws-iso, aws-iso-b, aws-iso-e and aws-iso-f for the
+// isolated regions, and aws for every other. It is the second field of an
 // ARN. A self-hosted store has no partition and uses aws, whose ARNs its
 // policies are written in.
 func Partition(region string) string {
@@ -30,6 +31,14 @@ func Partition(region string) string {
 		return "aws-cn"
 	case strings.HasPrefix(region, "us-gov-"):
 		return "aws-us-gov"
+	case strings.HasPrefix(region, "us-iso-"):
+		return "aws-iso"
+	case strings.HasPrefix(region, "us-isob-"):
+		return "aws-iso-b"
+	case strings.HasPrefix(region, "eu-isoe-"):
+		return "aws-iso-e"
+	case strings.HasPrefix(region, "us-isof-"):
+		return "aws-iso-f"
 	}
 	return "aws"
 }

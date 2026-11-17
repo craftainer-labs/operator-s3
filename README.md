@@ -248,7 +248,8 @@ request dials through the egress policy and the store's `proxyURL`, and
   user is created; changing them later does not move or re-bound an existing
   user. The policy's bucket ARN is in the
   partition of the store's region: `aws-cn` for `cn-` regions, `aws-us-gov` for
-  `us-gov-` regions, `aws` otherwise.
+  `us-gov-` regions, `aws-iso`, `aws-iso-b`, `aws-iso-e` or `aws-iso-f` for the
+  isolated regions, `aws` otherwise.
 - **Rotation uses the user's two access keys.** IAM generates the key and shows
   the secret once. A rotation creates the second key, writes it to the binding
   Secret, and after the grace period deletes every key but the new one. Before
@@ -256,7 +257,9 @@ request dials through the egress policy and the store's `proxyURL`, and
   one nor the one the binding Secret holds: a key whose secret was lost to a
   crash is never a reason to hit IAM's limit of two. A retry after a crash
   between writing the binding Secret and recording the key reuses the key the
-  Secret holds, so a key in use is never deleted. Delete order is keys, policies, user.
+  Secret holds, when the Secret is the claim's, a key is active, and the key
+  is neither the active nor the previous one and is still on the user; with
+  any other Secret nothing is reused. Delete order is keys, policies, user.
 - **IAM is eventually consistent.** A user or key created a moment ago may not
   be visible to the next call, and a new key may not work at once. A call that
   finds an entity missing right after the operator made it, or a change in

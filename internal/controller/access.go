@@ -470,17 +470,21 @@ func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAcc
 // rotateBeginGenerated is RotateBegin on AWS: the user's second key. A crash
 // between writing the binding Secret and recording the new key leaves the
 // Secret holding a key that status does not name yet. A retry must not delete
-// it: when the Secret holds a key of the user other than the active one, with
-// its secret, that key is the generation being issued and is reused (so no
-// third key is made). Every other key is a leftover whose secret nobody holds
+// it: when the claim's Secret holds a key of the user other than the active or
+// the previous one, with its secret, that key is the generation being issued
+// and is reused (so no third key is made). Every other key is a leftover whose secret nobody holds
 // and goes first, so a retry never hits IAM's limit of two.
 func (e *accessExternal) rotateBeginGenerated(ctx context.Context, active string) (binding.Data, lifecycle.Generation, error) {
 	s, err := e.binding(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	if s != nil && len(s.Data["secretAccessKey"]) > 0 {
-		if held := string(s.Data["accessKeyId"]); held != "" && held != active {
+	// Only a Secret of this claim counts, and only while a key is active: with
+	// none recorded nothing says which key is the old one. The previous
+	// generation, still in its grace period, is never the new one.
+	rs := e.claim.GetRotationStatus()
+	if s != nil && active != "" && metav1.IsControlledBy(s, e.claim) && len(s.Data["secretAccessKey"]) > 0 {
+		if held := string(s.Data["accessKeyId"]); held != "" && held != active && held != rs.Previous {
 			ids, err := e.be.gen.Keys(ctx, e.user)
 			if err != nil {
 				return nil, "", err

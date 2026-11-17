@@ -243,7 +243,7 @@ func TestMotoProbeRefusals(t *testing.T) {
 
 // motoAccess is the IAM side of a BucketAccess for a fresh user.
 func motoAccess(user, bucket string, write bool) s3client.AccessParams {
-	doc := s3client.AccessPolicy(bucket, "app/", write)
+	doc := s3client.AccessPolicy("aws", bucket, "app/", write)
 	return s3client.AccessParams{User: user, Policy: s3client.PolicyName(user, doc), PolicyDoc: doc, Marker: "ns/claim/uid"}
 }
 

@@ -249,9 +249,13 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 	ctx := context.Background()
 	spec := s3v1alpha1.BucketAccessSpec{}
 	st := lifecycle.RotationState{Active: "AKIAACTIVE"}
+	controller := true
 	holding := func(id, secret string) func(context.Context) (*corev1.Secret, error) {
 		return func(context.Context) (*corev1.Secret, error) {
-			return &corev1.Secret{Data: map[string][]byte{"accessKeyId": []byte(id), "secretAccessKey": []byte(secret)}}, nil
+			return &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{OwnerReferences: []metav1.OwnerReference{{UID: "uid-1", Controller: &controller}}},
+				Data:       map[string][]byte{"accessKeyId": []byte(id), "secretAccessKey": []byte(secret)},
+			}, nil
 		}
 	}
 
@@ -283,6 +287,9 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 		"no secret": holding("AKIANEW", ""),
 		"active":    holding("AKIAACTIVE", "old"),
 		"no Secret": func(context.Context) (*corev1.Secret, error) { return nil, nil },
+		"foreign": func(context.Context) (*corev1.Secret, error) {
+			return &corev1.Secret{Data: map[string][]byte{"accessKeyId": []byte("AKIANEW"), "secretAccessKey": []byte("new")}}, nil
+		},
 	} {
 		e, store = awsExt(t)
 		store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIANEW", secret: "new"}}
@@ -291,6 +298,24 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 		if err != nil || gen == "AKIANEW" || gen == "" || len(store.generated) != 2 || store.generated[0].id != "AKIAACTIVE" {
 			t.Errorf("%s: %v, %q, %v", name, err, gen, store.generated)
 		}
+	}
+
+	// The binding holds the previous key, still in its grace period: it is not
+	// the new one, and it is not deleted.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIAACTIVE", secret: "old"}, {id: "AKIAPREV", secret: "p"}}
+	e.claim.SetRotationStatus(common.RotationStatus{Active: "AKIAACTIVE", Previous: "AKIAPREV"})
+	e.binding = holding("AKIAPREV", "p")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, st); err != nil || gen == "AKIAPREV" || gen == "" {
+		t.Errorf("previous: %v, %q", err, gen)
+	}
+
+	// No active key is recorded: the Secret's key is not taken for a new one.
+	e, store = awsExt(t)
+	store.generated = []memKey{{id: "AKIANEW", secret: "new"}}
+	e.binding = holding("AKIANEW", "new")
+	if _, gen, err := e.RotateBegin(ctx, spec, AccessState{}, lifecycle.RotationState{}); err != nil || gen == "AKIANEW" || gen == "" {
+		t.Errorf("no active: %v, %q", err, gen)
 	}
 
 	// The Secret cannot be read, or the keys cannot be listed or deleted.
