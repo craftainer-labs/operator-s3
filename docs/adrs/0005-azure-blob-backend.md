@@ -51,7 +51,10 @@ Azure Blob Storage differs from S3 and GCS in ways that decide the design:
 
 Sources: [naming and referencing containers and metadata][naming],
 [anonymous access][anon], [assign a data role][rbac], [user delegation
-SAS][uds], [Azurite][azurite].
+SAS][uds] ("Stored access policies aren't supported for a user delegation SAS";
+the key is valid for up to seven days), [delegating role assignments with
+conditions][abac] (the built-in `Role Based Access Control Administrator` role
+can be constrained to chosen roles and principal types), [Azurite][azurite].
 
 ## Decision
 
@@ -281,7 +284,7 @@ would be a G-api change of its own.
 
 The integration job runs the store against Azurite (MIT, Microsoft's open
 source emulator), pinned by image digest, like moto and fake-gcs-server.
-Azurite 3.38.0 is the current release at the time of writing; the pin (tag and
+Azurite 3.37.0 (2026-08-26, MIT) is the latest release at the time of writing; the pin (tag and
 digest, with the Renovate comment) is chosen when the job is added, and is
 checked against the `mcr.microsoft.com/azure-storage/azurite` tag list then.
 It covers the container create/get/set-metadata/list/delete calls and the
@@ -441,3 +444,4 @@ in the README.
 [rbac]: https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access
 [uds]: https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas
 [azurite]: https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azurite
+[abac]: https://learn.microsoft.com/en-us/azure/role-based-access-control/delegate-role-assignments-overview
