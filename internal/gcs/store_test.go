@@ -230,7 +230,7 @@ func TestTokenAndClientErrors(t *testing.T) {
 		}
 	}
 	if !heldElsewhere(&googleapi.Error{Code: http.StatusForbidden}) {
-		t.Error("a 403 without a reason is not a name held elsewhere")
+		t.Error("a 403 without a reason should be a name held elsewhere")
 	}
 	if heldElsewhere(errors.New("x")) {
 		t.Error("a non-API error is a name held elsewhere")
