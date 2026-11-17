@@ -31,19 +31,51 @@ var _ probe.CloudProber = Prober{}
 // what the status promises). The client is built for the probe and its
 // connections are closed with it, not taken from the claims' store cache, so a
 // probe of a store nobody claims leaves nothing behind.
+//
+// A store on AWS is probed by probeAWS and reports what it discovered.
 func (p Prober) ProbeCloud(ctx context.Context, srv server.CloudServer, cc server.CloudConnection) (probe.CloudResult, error) {
-	version, err := p.probe(ctx, srv, cc.Connection)
+	spec, cs, err := storeConfigOf(srv)
+	if err != nil {
+		return probe.CloudResult{}, err
+	}
+	if cs.set {
+		return p.probeAWS(ctx, cs, cc)
+	}
+	version, err := p.probe(ctx, spec, cc.Connection)
 	return probe.CloudResult{Version: version}, err
 }
 
-func (p Prober) probe(ctx context.Context, srv server.CloudServer, conn server.Connection) (string, error) {
-	spec, provider, err := storeConfigOf(srv)
+// Keys of ServerStatus.Discovered an AWS store writes. The account is not one
+// of them: it would be an API detail beyond ADR 0002's drafts.
+const (
+	DiscoveredRegion   = "region"
+	DiscoveredEndpoint = "endpoint"
+)
+
+// probeAWS builds the store's AWS configuration (which proves the credentials
+// can be had, and refuses an endpointOverride the operator does not allow) and
+// asks STS and S3 for the caller and the buckets. Its errors are not
+// server.ErrInvalidServer on purpose: the probe shows any failure as
+// Ready=False, ServerUnreachable with a fixed text, and the reason of a
+// refused override or a missing target is a known gap of lib-operator-go
+// v0.6.0 (NKlib-3). The version stays empty: S3 has none.
+func (p Prober) probeAWS(ctx context.Context, cs cloudStore, cc server.CloudConnection) (probe.CloudResult, error) {
+	// The SDK logs through the context's logger; the probe repeats every
+	// interval and the reconciler logs its failure once per change.
+	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithSink(nil))
+	cfg, err := p.Config.awsConfig(ctx, cs, cc)
 	if err != nil {
-		return "", err
+		return probe.CloudResult{}, err
 	}
-	if provider {
-		return "", fmt.Errorf("%w: %w", server.ErrInvalidServer, ErrCloudStore)
+	if err := p.Config.ProbeAWS(ctx, cfg); err != nil {
+		return probe.CloudResult{}, err
 	}
+	return probe.CloudResult{Discovered: map[string]string{
+		DiscoveredRegion: cs.aws.Region, DiscoveredEndpoint: awsEndpoint(cs.aws),
+	}}, nil
+}
+
+func (p Prober) probe(ctx context.Context, spec s3v1alpha1.ObjectStoreConfig, conn server.Connection) (string, error) {
 	dial, err := p.Config.Egress.HostDialer(conn.Proxy)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", server.ErrInvalidServer, err)
@@ -70,14 +102,16 @@ func (p Prober) probe(ctx context.Context, srv server.CloudServer, conn server.C
 	return version, err
 }
 
-// storeConfigOf returns the S3 fields of a store kind of this operator, and
-// whether the store runs on a cloud.
-func storeConfigOf(srv server.CloudServer) (s3v1alpha1.ObjectStoreConfig, bool, error) {
+// storeConfigOf returns the S3 fields of a store kind of this operator, and its
+// provider if it runs on a cloud.
+func storeConfigOf(srv server.CloudServer) (s3v1alpha1.ObjectStoreConfig, cloudStore, error) {
 	switch s := srv.(type) {
 	case *s3v1alpha1.ClusterObjectStore:
-		return s.Spec.ObjectStoreConfig, s.HasProvider(), nil
+		cs, err := clusterCloud(s)
+		return s.Spec.ObjectStoreConfig, cs, err
 	case *s3v1alpha1.ObjectStore:
-		return s.Spec.ObjectStoreConfig, s.HasProvider(), nil
+		cs, err := namespacedCloud(s)
+		return s.Spec.ObjectStoreConfig, cs, err
 	}
-	return s3v1alpha1.ObjectStoreConfig{}, false, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
+	return s3v1alpha1.ObjectStoreConfig{}, cloudStore{}, fmt.Errorf("%w: %T", server.ErrUnknownServerKind, srv)
 }

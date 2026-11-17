@@ -349,6 +349,7 @@ func TestControllerSettings(t *testing.T) {
 	// Defaults: strict egress and Retain.
 	g.Expect(cs.deletion).To(Equal(common.DeletionRetain))
 	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(MatchError(egress.ErrBlocked))
+	g.Expect(cs.mode).To(Equal(egress.ModeStrict))
 
 	// The environment supplies the flag defaults; a flag wins.
 	t.Setenv("EGRESS_MODE", "allow-private")
@@ -361,6 +362,7 @@ func TestControllerSettings(t *testing.T) {
 	g.Expect(cs.deletion).To(Equal(common.DeletionDelete))
 	g.Expect(cs.namespace).To(Equal("from-env"))
 	g.Expect(cs.egress.Check(netip.MustParseAddr("10.0.0.1"))).To(Succeed())
+	g.Expect(cs.mode).To(Equal(egress.ModeAllowPrivate))
 	g.Expect(cs.egress.Check(netip.MustParseAddr("127.0.0.1"))).To(MatchError(egress.ErrBlocked))
 	s, err = parseFlags([]string{"--egress-mode=strict", "--operator-namespace=flag-ns"}, io.Discard)
 	g.Expect(err).NotTo(HaveOccurred())

@@ -13,10 +13,11 @@ conventions of
 See [`docs/TEMPLATE.md`](docs/TEMPLATE.md) for the conventions shared by every
 instance.
 
-Status: the `Bucket` and `BucketAccess` controllers are in place, tested against
-an in-memory store and an HTTPS test server, and the RustFS client against a
-real RustFS with TLS in the integration lane (see "Testing"). The stores do not
-report health yet (below).
+Status: the `Bucket` and `BucketAccess` controllers are in place for RustFS
+stores, tested against an in-memory store and an HTTPS test server, and the
+RustFS client against a real RustFS with TLS in the integration lane (see
+"Testing"). An AWS store serves `Bucket` claims; its access keys come later
+(see "AWS stores").
 
 ## API
 
@@ -38,7 +39,7 @@ well-formed `https` URL, a `proxyURL` with a `http`, `https` or `socks5`
 scheme, and a `Bucket` quota of at least one byte. Defaults and every other
 rule are in the CRD schema (OpenAPI and CEL).
 
-### Provider and credentials (API only)
+### Provider and credentials
 
 `ObjectStore` and `ClusterObjectStore` accept an optional `provider` (type
 `AWS`, with an `aws` block) and `credentials` next to the self-hosted fields:
@@ -54,9 +55,10 @@ rule are in the CRD schema (OpenAPI and CEL).
   controller applies them (`us-east-1`, `true`, `RustFS`), so a self-hosted
   store behaves as before.
 
-The AWS store is not usable yet: the operator refuses a store with a
-`provider` until the AWS client lands, and it reports that as
-`Ready=False`.
+An AWS store is described under "AWS stores" below. `provider.aws.endpointOverride`
+exists on `ClusterObjectStore` only: the type of a namespaced store's `aws` block
+leaves it out by design, so the API server drops it from an `ObjectStore`
+instead of rejecting it.
 
 ## Controllers
 
@@ -206,6 +208,53 @@ in `internal/app`:
   once; it is picked up at the next probe interval (one minute by default). Do
   not widen either cache for that: it costs memory and widens exposure for a
   latency gain of at most one interval.
+
+### AWS stores
+
+A store with `provider.type: AWS` serves `Bucket` claims on the S3 buckets of an
+AWS account, through the AWS SDK for Go v2. Its region, credentials and role
+come from `provider.aws` and `credentials` (WorkloadIdentity, the operator's own
+identity, for a `ClusterObjectStore`; a Secret with the keys `accessKeyId` and
+`secretAccessKey`, and `sessionToken` if there is one, for either kind). Every
+request dials through the egress policy and the store's `proxyURL`, and
+`tls.caBundle` is the set of roots the client trusts (`tls.serverName` and
+`tls.minVersion` do not apply to the SDK).
+
+- **Buckets** are created in the store's region with the same tag marker,
+  versioning, object lock and lifecycle rules as on RustFS. A bucket of the
+  derived name that exists in another region (`301`) or that another account
+  made while the create runs (`BucketAlreadyExists`) is a `NameCollision`. A
+  `403` on the existence check is an authentication failure, not a collision:
+  S3 answers it both to refused credentials and to a bucket of another account,
+  so the claim reports the store as unreachable. The operator keeps no lifecycle rule it cannot
+  write itself (a tag or size filter, no expiration in days): it replaces the
+  bucket's lifecycle configuration with the claim's rules.
+- **A bucket quota is refused.** S3 has no quota, and the operator never
+  compares one it cannot read back, which would update the bucket in a loop. A
+  `Bucket` with `spec.quota` on an AWS store is `Synced=False` with reason
+  `ReconcileError` and the message "an AWS store has no bucket quota: remove
+  spec.quota". Nothing is created or changed on the store until it is removed.
+- **`BucketAccess` is not available yet.** The IAM calls (users, policies, access
+  keys) arrive with the next item (NKs3-1b); until then a claim on an AWS store
+  reports `ReconcileError` ("access keys on an AWS store are not implemented
+  yet").
+- **Health.** The probe calls STS `GetCallerIdentity` and S3 `ListBuckets`
+  (the identity needs `s3:ListAllMyBuckets`), then writes only
+  `status.discovered.region` (the provider's region) and `status.discovered.endpoint`
+  (the override, or `https://s3.<region>.amazonaws.com`, with `.cn` for the China
+  partition). The account and the identity are not read into the status, and
+  `serverVersion` stays empty: S3 has none.
+- **Known gap (a library limit, `lib-operator-go` v0.6.0).** An `endpointOverride`
+  that the operator does not allow (it needs `EGRESS_MODE=allow-private`) and a
+  target that is missing show as `Ready=False` with reason `ServerUnreachable`
+  and a fixed text, not as `EndpointOverrideForbidden` or `TargetNotFound`. The
+  operator log has the reason. A later library release (NKlib-3) carries a typed
+  reason, and the operator will report it then.
+- **What CI cannot check.** The integration lane runs the AWS store against
+  moto server (see `test/integration`). moto does not enforce IAM and does not
+  validate a web identity token, so IAM eventual consistency, a role's actual
+  permissions and the workload identity credentials of a real cluster are not
+  verified by any test here.
 
 ### Known limits
 

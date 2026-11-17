@@ -25,7 +25,10 @@
   and runs its Go tests (build tag `integration`) with verified connections,
   after linting that package with `golangci-lint --build-tags integration`.
   A step-started container, not a `services:` one, because the certificates
-  come from the checkout.
+  come from the checkout. A second job starts moto server (pinned by digest) and
+  runs the AWS store's tests (build tags `integration,moto`) against it at its
+  private container address; moto does not enforce IAM or validate web identity
+  tokens.
 - `release-extras.yml` — manually dispatched with a `tag` input, right after
   each `Release`: `gh workflow run release-extras.yml -f tag=vX.Y.Z`. Publishes
   the Helm chart (OCI), the OLM bundle image and the file-based catalog image

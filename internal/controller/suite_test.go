@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -77,6 +78,8 @@ type memStore struct {
 	docs    map[string]string
 	fail    map[string]error
 	targets []s3client.Target
+	// awsConfigs are the AWS configurations the stores on AWS were built from.
+	awsConfigs []aws.Config
 }
 
 func newMemStore() *memStore {
@@ -277,6 +280,17 @@ type harness struct {
 
 func newHarness(t *testing.T, policy common.DeletionPolicy, mutate func(*s3v1alpha1.ClusterObjectStore)) *harness {
 	t.Helper()
+	return newHarnessOps(t, policy, func(_ string, s *s3v1alpha1.ClusterObjectStore) {
+		if mutate != nil {
+			mutate(s)
+		}
+	})
+}
+
+// newHarnessOps is newHarness for a mutation that needs the operator
+// namespace, which the store's Secret references name.
+func newHarnessOps(t *testing.T, policy common.DeletionPolicy, mutate func(ops string, s *s3v1alpha1.ClusterObjectStore)) *harness {
+	t.Helper()
 	h := &harness{t: t, ns: env.Namespace(t, nil), ops: env.Namespace(t, nil), fake: newMemStore(), rec: &testenv.Recorder{}, now: time.Now()}
 	name := "rustfs-" + strings.ToLower(rand.Text())[:10]
 	admin := &corev1.Secret{
@@ -288,7 +302,7 @@ func newHarness(t *testing.T, policy common.DeletionPolicy, mutate func(*s3v1alp
 	srv.Spec.AdminCredentialsSecretRef = &common.AdminSecretRef{Name: admin.Name, Namespace: h.ops}
 	srv.Spec.AllowedNamespaces = common.AllowedNamespaces{From: common.NamespacesAll}
 	if mutate != nil {
-		mutate(srv)
+		mutate(h.ops, srv)
 	}
 	h.must(env.Client.Create(context.Background(), admin))
 	h.must(env.Client.Create(context.Background(), srv))
@@ -302,6 +316,12 @@ func newHarness(t *testing.T, policy common.DeletionPolicy, mutate func(*s3v1alp
 			defer h.fake.mu.Unlock()
 			h.fake.targets = append(h.fake.targets, tg)
 			return h.fake, nil
+		},
+		NewAWSStore: func(cfg aws.Config) Store {
+			h.fake.mu.Lock()
+			defer h.fake.mu.Unlock()
+			h.fake.awsConfigs = append(h.fake.awsConfigs, cfg)
+			return h.fake
 		},
 		Now: func() time.Time { return h.now },
 	}
