@@ -311,8 +311,11 @@ Every request dials through the egress policy and the store's `proxyURL`.
   in the request that creates the bucket, so an unlabelled bucket is never a
   claim's, whatever the status records. A bucket another project holds answers
   `409` on create and `403` on read; a `403` is a `NameCollision` when the same
-  credentials can still list the project's buckets, and an authentication failure
-  when they cannot (as is a token the service-account key cannot get). The
+  credentials can still list the project's buckets (also when they merely lack
+  permission to read that bucket: the safe side, as it is then never managed, and
+  a delete of the claim leaves it alone), and an authentication failure when they
+  cannot (as is a token endpoint that refuses the key; its 5xx and 429 answers
+  stay a connection failure). A rate-limit or quota 403 is neither. The
   location is used at create only: a bucket in another location is not moved and
   is not reported.
 - **Lifecycle rules** have no ID on GCS: they are compared by prefix and days, so

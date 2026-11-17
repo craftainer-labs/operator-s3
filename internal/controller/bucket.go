@@ -156,7 +156,9 @@ func (e *bucketExternal) params(spec s3v1alpha1.BucketSpec) (s3client.BucketPara
 // Observe implements lifecycle.External. A bucket whose marker names another
 // claim is refused. One with no marker is taken over by Update only when the
 // claim's status records that it issued the create (a Create that stopped
-// before it stamped the marker); otherwise it is refused as unmanaged.
+// before it stamped the marker) and the store tags the bucket in a request of
+// its own; a store that writes the marker in the create request (atomicMarker,
+// GCS) never takes one over. Otherwise it is refused as unmanaged.
 //
 // While the claim is being deleted a bucket that is not its own is not refused
 // but left out (it does not exist as far as the claim is concerned), so the

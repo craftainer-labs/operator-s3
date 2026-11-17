@@ -60,7 +60,7 @@ var (
 	ErrObjectLockUnsupported = errors.New("a GCP store has no object lock: remove spec.objectLock")
 	// ErrClientNotBuilt is the answer of New when the library refuses its
 	// configuration (a malformed endpoint, for one).
-	ErrClientNotBuilt = errors.New("cannot build the GCS client from the configured endpoint")
+	ErrClientNotBuilt = errors.New("cannot build the GCS client from its configuration")
 	// ErrAccessNotImplemented is the answer of ApplyAccess: BucketAccess on GCP
 	// is not implemented until its API is decided.
 	ErrAccessNotImplemented = errors.New("access on a GCP store is not implemented yet: BucketAccess on GCP awaits an API decision")
@@ -132,13 +132,34 @@ func reasonOf(err error) string {
 	return ""
 }
 
+// tokenRefusal is whether the token endpoint refused the key itself (a 4xx
+// other than 429); its 5xx and 429 answers are transient, so the store stays
+// unreachable and the call is retried.
+func tokenRefusal(e *oauth2.RetrieveError) bool {
+	if e.Response == nil {
+		return false
+	}
+	c := e.Response.StatusCode
+	return c >= 400 && c < 500 && c != http.StatusTooManyRequests
+}
+
+// heldElsewhere is whether a 403 on a bucket read can mean that another
+// project holds the name: not a rate limit or a quota, which also answer 403.
+func heldElsewhere(err error) bool {
+	if statusOf(err) != http.StatusForbidden {
+		return false
+	}
+	r := strings.ToLower(reasonOf(err))
+	return !strings.Contains(r, "limit") && !strings.Contains(r, "quota")
+}
+
 // fail turns an error of the library into the errors of package s3client and
 // logs its category. 401 and 403 are an authentication failure of an
 // unreachable store, as for the other backends.
 func fail(ctx context.Context, op string, err error) error {
 	status := statusOf(err)
 	var tokenRefused *oauth2.RetrieveError
-	if status == 0 && errors.As(err, &tokenRefused) {
+	if status == 0 && errors.As(err, &tokenRefused) && tokenRefusal(tokenRefused) {
 		// The token endpoint refused the service-account key (it has no
 		// googleapi status): a failed authentication, not a network failure.
 		log.FromContext(ctx).V(1).Info("the token endpoint refused the credentials", "request", op)
@@ -168,10 +189,14 @@ func (s *Store) Bucket(ctx context.Context, name string) (s3client.BucketState, 
 	if errors.Is(err, storage.ErrBucketNotExist) || statusOf(err) == http.StatusNotFound {
 		return s3client.BucketState{}, nil
 	}
-	if statusOf(err) == http.StatusForbidden {
-		if _, perr := s.ServerVersion(ctx); errors.Is(perr, s3client.ErrNoVersion) {
-			return s3client.BucketState{}, s3client.ErrBucketExists
+	if heldElsewhere(err) {
+		// A key that can list the project's buckets but not read this one is
+		// taken for a name held elsewhere: the safe side, as the bucket is then
+		// never managed. Another list failure is the answer.
+		if _, perr := s.ServerVersion(ctx); !errors.Is(perr, s3client.ErrNoVersion) {
+			return s3client.BucketState{}, perr
 		}
+		return s3client.BucketState{}, s3client.ErrBucketExists
 	}
 	if err != nil {
 		return s3client.BucketState{}, fail(ctx, "GET bucket", err)

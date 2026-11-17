@@ -13,6 +13,7 @@ import (
 	"github.com/craftainer-labs/lib-operator-go/pkg/lifecycle"
 
 	"golang.org/x/oauth2"
+	"google.golang.org/api/googleapi"
 
 	"github.com/craftainer-labs/operator-s3/internal/s3client"
 )
@@ -201,9 +202,10 @@ func TestForeignBucket(t *testing.T) {
 // A refused token (no HTTP status of the API) is an authentication failure, and
 // a client the library cannot build is a fixed error without the endpoint.
 func TestTokenAndClientErrors(t *testing.T) {
-	refused := &url.Error{Op: "Get", URL: "https://secret.example/token", Err: &oauth2.RetrieveError{
+	rerr := &oauth2.RetrieveError{
 		Response: &http.Response{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"}, Body: []byte("secret detail"),
-	}}
+	}
+	refused := &url.Error{Op: "Get", URL: "https://secret.example/token", Err: rerr}
 	hc := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, refused })}
 	s, err := New(context.Background(), &cloud.GCPClient{HTTPClient: hc, Endpoint: "http://gcs.invalid"}, "proj-12345", "")
 	if err != nil {
@@ -212,6 +214,23 @@ func TestTokenAndClientErrors(t *testing.T) {
 	_, err = s.Bucket(context.Background(), "b")
 	if !errors.Is(err, s3client.ErrConnAuth) || strings.Contains(err.Error(), "secret") {
 		t.Errorf("token refusal: %v", err)
+	}
+
+	// A transient answer of the token endpoint is not a refusal of the key.
+	rerr.Response.StatusCode = http.StatusServiceUnavailable
+	if _, err = s.Bucket(context.Background(), "b"); errors.Is(err, s3client.ErrConnAuth) {
+		t.Errorf("token endpoint 503: %v", err)
+	}
+	if tokenRefusal(&oauth2.RetrieveError{}) {
+		t.Error("an answer-less token error is a refusal")
+	}
+	for _, reason := range []string{"rateLimitExceeded", "quotaExceeded"} {
+		if heldElsewhere(&googleapi.Error{Code: http.StatusForbidden, Errors: []googleapi.ErrorItem{{Reason: reason}}}) {
+			t.Errorf("%s is a name held elsewhere", reason)
+		}
+	}
+	if heldElsewhere(errors.New("x")) {
+		t.Error("a non-API error is a name held elsewhere")
 	}
 
 	_, err = New(context.Background(), &cloud.GCPClient{HTTPClient: hc, Endpoint: "http://[::1"}, "proj-12345", "")
