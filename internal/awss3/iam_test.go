@@ -20,7 +20,7 @@ const (
 
 // accessParams is the access of the user to bucket b, read-only or not.
 func accessParams(bucket string, write bool) s3client.AccessParams {
-	doc := s3client.AccessPolicy(bucket, "", write)
+	doc := s3client.AccessPolicy("aws", bucket, "", write)
 	return s3client.AccessParams{User: iamUser, Policy: s3client.PolicyName(iamUser, doc), PolicyDoc: doc, Marker: marker}
 }
 

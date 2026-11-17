@@ -43,7 +43,7 @@ func TestUserStates(t *testing.T) {
 }
 
 func accessParams(user string, write bool) AccessParams {
-	doc := AccessPolicy("bkt", "app/", write)
+	doc := AccessPolicy("aws", "bkt", "app/", write)
 	return AccessParams{User: user, Secret: "user-secret", Policy: PolicyName(user, doc), PolicyDoc: doc}
 }
 
