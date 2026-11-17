@@ -470,11 +470,13 @@ func (e *accessExternal) RotateBegin(ctx context.Context, _ s3v1alpha1.BucketAcc
 // rotateBeginGenerated is RotateBegin on AWS: the user's second key. A crash
 // between writing the binding Secret and recording the new key leaves the
 // Secret holding a key that status does not name yet. A retry must not delete
-// it: when the claim's Secret holds a key of the user other than the active or
-// the previous one, with its secret, that key is the generation being issued
-// and is reused (so no third key is made). When no key is recorded as active
-// and the Secret holds one of the user, that key is kept as the active one. Every other key is a leftover whose secret nobody holds
-// and goes first, so a retry never hits IAM's limit of two.
+// it. When status records an active key and the claim's Secret holds another
+// key of the user that is not the previous one, with its secret, that key is
+// the generation being issued and is reused (so no third key is made). When no
+// key is recorded as active (the Create status write was lost) and the Secret
+// holds one of the user, that key is the one in use and is kept as the active
+// one. Every other key is a leftover whose secret nobody holds and goes
+// first, so a retry never hits IAM's limit of two.
 func (e *accessExternal) rotateBeginGenerated(ctx context.Context, active string) (binding.Data, lifecycle.Generation, error) {
 	s, err := e.binding(ctx)
 	if err != nil {
