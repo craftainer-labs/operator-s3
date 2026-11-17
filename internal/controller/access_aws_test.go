@@ -320,7 +320,7 @@ func TestAWSRotateBeginAfterACrash(t *testing.T) {
 	}
 
 	// The Secret cannot be read, or the keys cannot be listed or deleted.
-	e, store = awsExt(t)
+	e, _ = awsExt(t)
 	e.binding = func(context.Context) (*corev1.Secret, error) { return nil, errStore }
 	if _, _, err := e.RotateBegin(ctx, spec, AccessState{}, st); !errors.Is(err, errStore) {
 		t.Errorf("binding fails: %v", err)
