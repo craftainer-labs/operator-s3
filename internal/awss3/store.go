@@ -118,10 +118,11 @@ func fail(ctx context.Context, op string, err error) error {
 	return e
 }
 
-// head reports whether the bucket exists. A bucket that answers 403 (somebody
-// else's) or 301 (in another region) is not this account's to touch:
-// ErrBucketExists. A 403 is also what refused credentials answer, which the
-// probe of the store reports (Ready=False) separately.
+// head reports whether the bucket exists. A bucket that answers 301 (in
+// another region) is not this account's to touch: ErrBucketExists. A 403 is
+// an authentication failure like any other (refused credentials answer it, and
+// so does a bucket of another account); it is not read as a collision, which
+// would hide refused credentials behind a name that is taken.
 func (s *Store) head(ctx context.Context, name string) (bool, error) {
 	_, err := s.api.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(name)})
 	if err == nil {
@@ -130,7 +131,7 @@ func (s *Store) head(ctx context.Context, name string) (bool, error) {
 	switch statusOf(err) {
 	case http.StatusNotFound:
 		return false, nil
-	case http.StatusForbidden, http.StatusMovedPermanently:
+	case http.StatusMovedPermanently:
 		return false, s3client.ErrBucketExists
 	}
 	return false, fail(ctx, "HEAD bucket", err)
@@ -247,6 +248,15 @@ func (s *Store) CreateBucket(ctx context.Context, p s3client.BucketParams) error
 		return fail(ctx, "PUT bucket", err)
 	}
 	return s.configure(ctx, p, s3client.BucketState{})
+}
+
+// Validate refuses parameters the store can never apply, before any request
+// is sent: a quota (ErrQuotaUnsupported).
+func (s *Store) Validate(p s3client.BucketParams) error {
+	if p.Quota != 0 {
+		return ErrQuotaUnsupported
+	}
+	return nil
 }
 
 // UpdateBucket changes what differs between the bucket as Bucket found it and

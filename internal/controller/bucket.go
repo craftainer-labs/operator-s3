@@ -175,6 +175,16 @@ func (e *bucketExternal) Create(ctx context.Context, spec s3v1alpha1.BucketSpec)
 	if err != nil {
 		return nil, err
 	}
+	// A store may refuse parameters it can never apply (an AWS store, a quota)
+	// before the intent is recorded: no create-issued for a claim that cannot
+	// be created.
+	if v, ok := e.be.store.(interface {
+		Validate(s3client.BucketParams) error
+	}); ok {
+		if err := v.Validate(p); err != nil {
+			return nil, err
+		}
+	}
 	// Record the intent before the create, so a crash after it is recognised.
 	e.claim.SetExternalID(createIssued)
 	if err := e.persist(ctx); err != nil {

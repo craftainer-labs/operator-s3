@@ -222,10 +222,11 @@ request dials through the egress policy and the store's `proxyURL`, and
 
 - **Buckets** are created in the store's region with the same tag marker,
   versioning, object lock and lifecycle rules as on RustFS. A bucket of the
-  derived name that exists in another account or region is a `NameCollision`.
-  A `403` on the existence check is read as a collision, so a store whose
-  credentials are refused shows that on the store (`Ready=False`) while its
-  claims report a collision. The operator keeps no lifecycle rule it cannot
+  derived name that exists in another region (`301`) or that another account
+  made while the create runs (`BucketAlreadyExists`) is a `NameCollision`. A
+  `403` on the existence check is an authentication failure, not a collision:
+  S3 answers it both to refused credentials and to a bucket of another account,
+  so the claim reports the store as unreachable. The operator keeps no lifecycle rule it cannot
   write itself (a tag or size filter, no expiration in days): it replaces the
   bucket's lifecycle configuration with the claim's rules.
 - **A bucket quota is refused.** S3 has no quota, and the operator never

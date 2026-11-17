@@ -101,6 +101,12 @@ func TestQuotaIsRefused(t *testing.T) {
 	s := New(f.serve(t, "us-east-1"))
 	p := params("b")
 	p.Quota = 1 << 30
+	if err := s.Validate(p); !errors.Is(err, ErrQuotaUnsupported) {
+		t.Errorf("validate: %v", err)
+	}
+	if err := s.Validate(params("b")); err != nil {
+		t.Errorf("validate without a quota: %v", err)
+	}
 	if err := s.CreateBucket(context.Background(), p); !errors.Is(err, ErrQuotaUnsupported) {
 		t.Errorf("create: %v", err)
 	}
@@ -112,10 +118,19 @@ func TestQuotaIsRefused(t *testing.T) {
 	}
 }
 
-// A bucket that is not this account's, or lives in another region, is a
-// collision, on every path that reads or creates.
+// A bucket that lives in another region is a collision, on every path that
+// reads or creates. A 403 is an authentication failure, never a collision.
 func TestForeignBucket(t *testing.T) {
-	for _, status := range []int{http.StatusForbidden, http.StatusMovedPermanently} {
+	f0 := newFakeS3()
+	f0.refuse["HEAD"] = refusal{http.StatusForbidden, "Forbidden"}
+	s0 := New(f0.serve(t, "us-east-1"))
+	if _, err := s0.Bucket(context.Background(), "b"); errors.Is(err, s3client.ErrBucketExists) || !errors.Is(err, s3client.ErrConnAuth) {
+		t.Errorf("403 read: %v", err)
+	}
+	if err := s0.CreateBucket(context.Background(), params("b")); errors.Is(err, s3client.ErrBucketExists) || !errors.Is(err, s3client.ErrConnAuth) {
+		t.Errorf("403 create: %v", err)
+	}
+	for _, status := range []int{http.StatusMovedPermanently} {
 		f := newFakeS3()
 		f.refuse["HEAD"] = refusal{status, "Forbidden"}
 		s := New(f.serve(t, "us-east-1"))
@@ -167,9 +182,6 @@ func TestFailuresAreCategories(t *testing.T) {
 	}
 	for _, status := range []int{http.StatusInternalServerError, http.StatusForbidden} {
 		for _, tc := range cases {
-			if tc.name == "head" && status == http.StatusForbidden {
-				continue // a collision, see TestForeignBucket
-			}
 			f := newFakeS3()
 			f.put("b", &fakeBucket{tags: map[string]string{}})
 			f.refuse[tc.key] = refusal{status, "Boom"}

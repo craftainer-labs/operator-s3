@@ -416,6 +416,9 @@ func TestBucketsOnAWSStore(t *testing.T) {
 		t.Fatalf("quota: %v", err)
 	}
 	h.get(quota)
+	if quota.GetExternalID() == createIssued {
+		t.Error("create-issued was recorded for a claim that cannot be created")
+	}
 	msg := h.wantCondition(quota.Status.Conditions, conditions.Synced, metav1.ConditionFalse, conditions.ReconcileError)
 	if !strings.Contains(msg, "no bucket quota") || strings.Contains(msg, "127.0.0.1") || puts != 0 {
 		t.Errorf("message %q, %d writes", msg, puts)
